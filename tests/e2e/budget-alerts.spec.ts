@@ -77,6 +77,11 @@ async function addBudget(page: Page, category: string, limit: string) {
   await expect(dialog).toBeHidden();
 }
 
+/** Run the hourly maintenance pass now (TEST_MODE route; evaluates all users). */
+async function runSweep(request: APIRequestContext) {
+  expect((await request.post("/test-run-sweep")).ok()).toBeTruthy();
+}
+
 function budgetCard(page: Page, category: string) {
   return page
     .getByTestId("budget-card")
@@ -147,6 +152,50 @@ test.describe("Over-budget alerts", () => {
     expect((await alertEmails(page.request, email))[0].subject).toContain(
       "Transport",
     );
+  });
+
+  test("the hourly sweep emails when moving a category under a budgeted parent pushes it over", async ({
+    page,
+    signedInUser,
+  }) => {
+    const email = `${signedInUser.username}@example.com`;
+    await addBudget(page, "Entertainment", "50");
+
+    await page.goto("/categories");
+    await page.getByRole("button", { name: "Add Category" }).click();
+    await page.getByLabel("Name").fill("Board Games");
+    await page.getByRole("button", { name: "Create Category" }).click();
+    await expect(page.getByText("Board Games")).toBeVisible();
+
+    await addTransaction(page, {
+      description: "Strategy game",
+      amount: "80",
+      category: "Board Games",
+    });
+
+    // Moving a category has no immediate alert check, so the hourly sweep is
+    // what sends the alert. (Asserting "no email before the sweep" would be
+    // racy: other parallel tests run the sweep for every user.)
+    await page.goto("/categories");
+    await page
+      .getByTestId("category-row")
+      .filter({ hasText: "Board Games" })
+      .getByTestId("edit-category")
+      .click();
+    await page.getByLabel("Parent Category").selectOption("Entertainment");
+    await page.getByRole("button", { name: "Save Changes" }).click();
+    await expect(page.getByRole("button", { name: "Save Changes" })).toBeHidden();
+    await page.goto("/budgets");
+    await expect(budgetCard(page, "Entertainment").getByText("Over budget")).toBeVisible();
+
+    await runSweep(page.request);
+    const alerts = await alertEmails(page.request, email);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].subject).toContain("Entertainment");
+    expect(alerts[0].text).toContain("Spent: 80.00 PLN");
+
+    await runSweep(page.request);
+    expect(await alertEmails(page.request, email)).toHaveLength(1);
   });
 
   test("a verified user sees no verify-email hint", async ({

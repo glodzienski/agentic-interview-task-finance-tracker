@@ -11,6 +11,7 @@ import { env } from "../src/server/env.ts";
 import {
   createBudget,
   deleteBudget,
+  evaluateAllBudgetAlerts,
   evaluateBudgetAlerts,
   getBudgetOverview,
   updateBudgetLimit,
@@ -782,5 +783,115 @@ describe("over-budget alerts", () => {
     await deleteBudget(userId, id);
 
     expect(await alertRows()).toHaveLength(0);
+  });
+});
+
+describe("over-budget alerts: every user with Budgets (hourly sweep)", () => {
+  const midOctober = new Date("2026-10-15T12:00:00Z");
+  // Unique per test: the captured-email buffer is shared by the whole file.
+  let sweepSeq = 0;
+  let userEmail: string;
+  let otherEmail: string;
+
+  async function setUserEmail(id: string, email: string, verified = true) {
+    await db
+      .update(schema.users)
+      .set({ email, email_verified_at: verified ? new Date() : null })
+      .where(eq(schema.users.id, id));
+  }
+
+  beforeEach(async () => {
+    const runId = `${++sweepSeq}-${Date.now()}`;
+    userEmail = `budgets-sweep-user-${runId}@example.com`;
+    otherEmail = `budgets-sweep-other-${runId}@example.com`;
+    await setUserEmail(userId, userEmail);
+    await setUserEmail(otherUserId, otherEmail);
+    await insertCategory("groceries");
+    await insertAccount("other-acc", "PLN", otherUserId);
+    await insertCategory("other-groceries", null, otherUserId);
+  });
+
+  it("alerts every user whose Budget is over budget", async () => {
+    await budgetFor("groceries", 10000);
+    await createBudget(otherUserId, {
+      categoryId: "other-groceries",
+      currency: "PLN",
+      limitMinor: 10000,
+    });
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await insertTransaction("other-acc", "other-groceries", -15000, "2026-10-10", otherUserId);
+
+    await evaluateAllBudgetAlerts(midOctober);
+
+    expect(getCapturedEmails(userEmail)).toHaveLength(1);
+    expect(getCapturedEmails(otherEmail)).toHaveLength(1);
+  });
+
+  it("catches indirect over-budget cases, such as moving a subcategory under a budgeted parent", async () => {
+    await insertCategory("hobbies");
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "hobbies", -12000, "2026-10-10");
+    await evaluateAllBudgetAlerts(midOctober);
+    expect(getCapturedEmails(userEmail)).toHaveLength(0);
+
+    await db
+      .update(schema.categories)
+      .set({ parent_id: "groceries" })
+      .where(eq(schema.categories.id, "hobbies"));
+    await evaluateAllBudgetAlerts(midOctober);
+
+    expect(getCapturedEmails(userEmail)).toHaveLength(1);
+  });
+
+  it("sends the pending alert on the next sweep after the user verifies their email", async () => {
+    await setUserEmail(userId, userEmail, false);
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await evaluateAllBudgetAlerts(midOctober);
+    expect(getCapturedEmails(userEmail)).toHaveLength(0);
+
+    await setUserEmail(userId, userEmail, true);
+    await evaluateAllBudgetAlerts(new Date("2026-10-20T12:00:00Z"));
+
+    expect(getCapturedEmails(userEmail)).toHaveLength(1);
+  });
+
+  it("skips users with deletion pending, but still alerts the others", async () => {
+    await db
+      .update(schema.users)
+      .set({ deletion_requested_at: new Date() })
+      .where(eq(schema.users.id, userId));
+    await budgetFor("groceries", 10000);
+    await createBudget(otherUserId, {
+      categoryId: "other-groceries",
+      currency: "PLN",
+      limitMinor: 10000,
+    });
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await insertTransaction("other-acc", "other-groceries", -15000, "2026-10-10", otherUserId);
+
+    await evaluateAllBudgetAlerts(midOctober);
+
+    expect(getCapturedEmails(userEmail)).toHaveLength(0);
+    expect(getCapturedEmails(otherEmail)).toHaveLength(1);
+  });
+
+  it("sends nothing more on later sweeps in the same month", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+
+    await evaluateAllBudgetAlerts(midOctober);
+    await evaluateAllBudgetAlerts(new Date("2026-10-15T13:00:00Z"));
+
+    expect(getCapturedEmails(userEmail)).toHaveLength(1);
+  });
+
+  it("reports how many users it evaluated", async () => {
+    await budgetFor("groceries", 10000);
+
+    expect(await evaluateAllBudgetAlerts(midOctober)).toEqual({
+      evaluatedUsers: 1,
+      failedUsers: 0,
+    });
   });
 });

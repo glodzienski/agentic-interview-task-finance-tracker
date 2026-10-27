@@ -494,3 +494,31 @@ export function checkBudgetAlertsInBackground(userId: string): void {
     getLogger().error({ err: error, userId }, "over-budget alert check failed"),
   );
 }
+
+/**
+ * Run `evaluateBudgetAlerts` for every user with at least one Budget — the
+ * hourly sweep that catches Budgets pushed over without an immediate check
+ * (rule/AI recategorisation, receipts, category moves, an email verified
+ * later in the month). One user's failure is logged and never stops the rest.
+ */
+export async function evaluateAllBudgetAlerts(
+  now: Date,
+): Promise<{ evaluatedUsers: number; failedUsers: number }> {
+  const users = await db
+    .selectDistinct({ userId: schema.budgets.user_id })
+    .from(schema.budgets);
+
+  let failedUsers = 0;
+  for (const { userId } of users) {
+    try {
+      await evaluateBudgetAlerts(userId, now);
+    } catch (error) {
+      failedUsers++;
+      getLogger().error(
+        { err: error, userId },
+        "hourly over-budget alert evaluation failed for user",
+      );
+    }
+  }
+  return { evaluatedUsers: users.length, failedUsers };
+}
