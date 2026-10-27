@@ -436,6 +436,43 @@ describe("budget overview: receipt items (ADR-0001)", () => {
     expect((await statusOf(groceries)).spentMinor).toBe(700);
   });
 
+  it("gives the transaction's category its uncategorised items even when items exceed the transaction", async () => {
+    const groceries = await budgetFor("groceries", 100000);
+    const household = await budgetFor("household", 100000);
+    // Items total 130 > 100: nothing is uncovered, so the transaction's
+    // category gets exactly its uncategorised item.
+    const txn = await insertTransaction("pln-acc", "groceries", -10000, "2026-10-10");
+    await insertReceipt(txn, [
+      [8000, "household"],
+      [5000, null],
+    ]);
+
+    expect((await statusOf(household)).spentMinor).toBe(8000);
+    expect((await statusOf(groceries)).spentMinor).toBe(5000);
+  });
+
+  it("still counts uncategorised items when a categorised item alone exceeds the transaction", async () => {
+    const groceries = await budgetFor("groceries", 100000);
+    const txn = await insertTransaction("pln-acc", "groceries", -10000, "2026-10-10");
+    await insertReceipt(txn, [
+      [15000, "household"],
+      [1000, null],
+    ]);
+
+    expect((await statusOf(groceries)).spentMinor).toBe(1000);
+  });
+
+  it("combines items from every receipt linked to a transaction", async () => {
+    const groceries = await budgetFor("groceries", 100000);
+    const household = await budgetFor("household", 100000);
+    const txn = await insertTransaction("pln-acc", "groceries", -10000, "2026-10-10");
+    await insertReceipt(txn, [[3000, "household"]]);
+    await insertReceipt(txn, [[2000, "household"]]);
+
+    expect((await statusOf(household)).spentMinor).toBe(5000);
+    expect((await statusOf(groceries)).spentMinor).toBe(5000);
+  });
+
   it("counts only the items of an uncategorised transaction", async () => {
     const household = await budgetFor("household", 100000);
     const groceries = await budgetFor("groceries", 100000);
