@@ -9,10 +9,12 @@ import { getCapturedEmails } from "../src/server/email.ts";
 import { hardDeleteUser } from "../src/server/compliance.server.ts";
 import { env } from "../src/server/env.ts";
 import {
+  budgetCountsByCategory,
   createBudget,
   deleteBudget,
   evaluateAllBudgetAlerts,
   evaluateBudgetAlerts,
+  deleteBudgetsForCategories,
   getBudgetOverview,
   updateBudgetLimit,
 } from "../src/server/budgets.server.ts";
@@ -930,5 +932,45 @@ describe("over-budget alerts: every user with Budgets (hourly sweep)", () => {
       evaluatedUsers: 1,
       failedUsers: 0,
     });
+  });
+});
+
+describe("Budgets of deleted categories", () => {
+  it("counts Budgets per category, across currencies", async () => {
+    await insertCategory("groceries");
+    await insertCategory("transport");
+    await budgetFor("groceries", 1000, "PLN");
+    await budgetFor("groceries", 1000, "EUR");
+    await budgetFor("transport", 1000, "PLN");
+
+    const counts = await budgetCountsByCategory(userId);
+    expect(Object.fromEntries(counts)).toEqual({ groceries: 2, transport: 1 });
+  });
+
+  it("removes only the Budgets on the given categories", async () => {
+    await insertCategory("food");
+    await insertCategory("restaurants", "food");
+    await insertCategory("transport");
+    await budgetFor("food", 1000);
+    await budgetFor("restaurants", 1000);
+    const transport = await budgetFor("transport", 1000);
+
+    await deleteBudgetsForCategories(userId, ["food", "restaurants"]);
+
+    const { budgets } = await getBudgetOverview(userId, "2026-10");
+    expect(budgets.map((b) => b.id)).toEqual([transport]);
+  });
+
+  it("never removes another user's Budgets", async () => {
+    await insertCategory("other-groceries", null, otherUserId);
+    await createBudget(otherUserId, {
+      categoryId: "other-groceries",
+      currency: "PLN",
+      limitMinor: 1000,
+    });
+
+    await deleteBudgetsForCategories(userId, ["other-groceries"]);
+
+    expect((await getBudgetOverview(otherUserId, "2026-10")).budgets).toHaveLength(1);
   });
 });

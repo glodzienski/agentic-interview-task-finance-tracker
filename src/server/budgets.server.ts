@@ -533,3 +533,39 @@ export async function evaluateAllBudgetAlerts(
   }
   return { evaluatedUsers: users.length, failedUsers };
 }
+
+// --- Category deletion ---
+
+/** Number of Budgets on each of the user's categories (all currencies). */
+export async function budgetCountsByCategory(
+  userId: string,
+): Promise<Map<string, number>> {
+  const rows = await db
+    .select({
+      categoryId: schema.budgets.category_id,
+      count: sql<number>`count(*)`.mapWith(Number),
+    })
+    .from(schema.budgets)
+    .where(eq(schema.budgets.user_id, userId))
+    .groupBy(schema.budgets.category_id);
+  return new Map(rows.map((r) => [r.categoryId, r.count]));
+}
+
+/**
+ * Remove the Budgets on categories that are being deleted. Budgets go with
+ * their category — they never follow reassigned transactions (CONTEXT.md).
+ */
+export async function deleteBudgetsForCategories(
+  userId: string,
+  categoryIds: string[],
+): Promise<void> {
+  if (categoryIds.length === 0) return;
+  await db
+    .delete(schema.budgets)
+    .where(
+      and(
+        inArray(schema.budgets.category_id, categoryIds),
+        eq(schema.budgets.user_id, userId),
+      ),
+    );
+}

@@ -77,6 +77,18 @@ function buildCategoryTree(categories: CategoryRow[]): CategoryNode[] {
   return roots;
 }
 
+/** Budgets on a category plus all its descendants — what deleting it removes. */
+function subtreeBudgetCount(nodes: CategoryNode[], id: string): number {
+  const sum = (node: CategoryNode): number =>
+    node.budget_count + node.children.reduce((n, c) => n + sum(c), 0);
+  for (const node of nodes) {
+    if (node.id === id) return sum(node);
+    const inChildren = subtreeBudgetCount(node.children, id);
+    if (inChildren > 0) return inChildren;
+  }
+  return 0;
+}
+
 function getTopLevelCategories(categories: CategoryRow[]): CategoryRow[] {
   return categories.filter((c) => c.parent_id === null);
 }
@@ -326,6 +338,7 @@ function DeleteConfirm({
   categoryName,
   transactionCount,
   childCount,
+  budgetCount,
   reassignOptions,
   error,
   onConfirm,
@@ -335,6 +348,8 @@ function DeleteConfirm({
   categoryName: string;
   transactionCount: number;
   childCount: number;
+  /** Budgets on the category and all its descendants. */
+  budgetCount: number;
   reassignOptions: CategoryRow[];
   error: string | null;
   onConfirm: (reassignToCategoryId: string | null) => void;
@@ -363,6 +378,14 @@ function DeleteConfirm({
         {hasChildren && (
           <div className="p-2 rounded-md bg-amber-500/10 text-amber-600 text-xs">
             {m.delete_will_remove_children({ n: childCount })}
+          </div>
+        )}
+        {budgetCount > 0 && (
+          <div
+            className="p-2 rounded-md bg-amber-500/10 text-amber-600 text-xs"
+            data-testid="delete-removes-budgets"
+          >
+            {m.delete_will_remove_budgets({ n: budgetCount })}
           </div>
         )}
         {hasTransactions ? (
@@ -419,6 +442,8 @@ function DeleteConfirm({
 // --- Main Page ---
 
 const CATEGORIES_QUERY_KEY = ["categories"] as const;
+// Deleting categories removes their Budgets.
+const BUDGETS_QUERY_KEY = ["budgets"] as const;
 
 function CategoriesPage() {
   const queryClient = useQueryClient();
@@ -463,6 +488,7 @@ function CategoriesPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: CATEGORIES_QUERY_KEY });
       queryClient.invalidateQueries({ queryKey: ["transactions"] });
+      queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
     },
   });
 
@@ -679,6 +705,9 @@ function CategoriesPage() {
         }
         childCount={
           categories.find((c) => c.id === deleteConfirmId)?.child_count ?? 0
+        }
+        budgetCount={
+          deleteConfirmId ? subtreeBudgetCount(tree, deleteConfirmId) : 0
         }
         reassignOptions={categories.filter((c) => c.id !== deleteConfirmId)}
         error={deleteError}

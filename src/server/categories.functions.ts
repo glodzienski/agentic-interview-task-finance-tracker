@@ -2,6 +2,10 @@ import { createServerFn } from "@tanstack/react-start";
 import { eq, and, asc, count, sql, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "#/db";
+import {
+  budgetCountsByCategory,
+  deleteBudgetsForCategories,
+} from "#/server/budgets.server";
 import { requireUserId } from "#/server/session";
 
 
@@ -86,9 +90,12 @@ export const getCategories = createServerFn({ method: "GET" }).handler(
       }
     }
 
+    const budgetCounts = await budgetCountsByCategory(userId);
+
     return rows.map((row) => ({
       ...row,
       child_count: childCountMap.get(row.id) ?? 0,
+      budget_count: budgetCounts.get(row.id) ?? 0,
     }));
   },
 );
@@ -307,14 +314,7 @@ export const deleteCategory = createServerFn({ method: "POST" })
 
     // Budgets on deleted categories go with them (alert history cascades) —
     // they never follow reassigned transactions (see CONTEXT.md, Budget).
-    await db
-      .delete(schema.budgets)
-      .where(
-        and(
-          inArray(schema.budgets.category_id, allIdsToDelete),
-          eq(schema.budgets.user_id, userId),
-        ),
-      );
+    await deleteBudgetsForCategories(userId, allIdsToDelete);
 
     // Delete all descendant categories first, then the target
     await db

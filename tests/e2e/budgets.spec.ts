@@ -326,22 +326,71 @@ test.describe("Budgets", () => {
     await expect(card).toBeVisible();
   });
 
-  test("deleting a budgeted category still works and removes its Budget", async ({
+  test("deleting a category warns about and removes Budgets on it and its subcategories", async ({
     page,
   }) => {
-    await addBudget(page, "Transfers", "200");
-    await expect(budgetCard(page, "Transfers")).toBeVisible();
+    await addBudget(page, "Groceries", "500");
+    await addBudget(page, "— Vegetables", "100");
+    await addBudget(page, "Transport", "200");
 
     await page.goto("/categories");
     await page
       .getByTestId("category-row")
-      .filter({ hasText: "Transfers" })
+      .filter({ hasText: /^Groceries/ })
+      .first()
       .getByTestId("delete-category")
       .click();
-    await page.getByRole("button", { name: "Delete" }).click();
-    await expect(
-      page.getByTestId("category-row").filter({ hasText: "Transfers" }),
-    ).toBeHidden();
+    const confirm = page.getByRole("alertdialog");
+    await expect(confirm.getByTestId("delete-removes-budgets")).toHaveText(
+      "This will also remove 2 budget(s) on this category and its sub-categories.",
+    );
+    await confirm.getByRole("button", { name: "Delete" }).click();
+    await expect(confirm).toBeHidden();
+
+    await page.goto("/budgets");
+    await expect(page.getByTestId("budget-card")).toHaveCount(1);
+    await expect(budgetCard(page, "Transport")).toBeVisible();
+  });
+
+  test("deleting a category without Budgets shows no Budget warning", async ({
+    page,
+  }) => {
+    await addBudget(page, "Transport", "200");
+
+    await page.goto("/categories");
+    await page
+      .getByTestId("category-row")
+      .filter({ hasText: /^Housing/ })
+      .first()
+      .getByTestId("delete-category")
+      .click();
+    const confirm = page.getByRole("alertdialog");
+    await expect(confirm).toBeVisible();
+    await expect(confirm.getByTestId("delete-removes-budgets")).toBeHidden();
+  });
+
+  test("reassigning a deleted category's transactions does not move its Budget", async ({
+    page,
+  }) => {
+    await addBudget(page, "Health", "300");
+    await addTransaction(page, {
+      description: "Pharmacy run",
+      amount: "40",
+      category: "Health",
+    });
+
+    await page.goto("/categories");
+    await page
+      .getByTestId("category-row")
+      .filter({ hasText: /^Health/ })
+      .first()
+      .getByTestId("delete-category")
+      .click();
+    const confirm = page.getByRole("alertdialog");
+    await expect(confirm.getByTestId("delete-removes-budgets")).toBeVisible();
+    await confirm.getByLabel("Reassign transactions to").selectOption("Housing");
+    await confirm.getByRole("button", { name: "Delete" }).click();
+    await expect(confirm).toBeHidden();
 
     await page.goto("/budgets");
     await expect(page.getByText("No budgets yet")).toBeVisible();

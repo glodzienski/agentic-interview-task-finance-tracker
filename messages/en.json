@@ -431,5 +431,6 @@
   "budget_limit_reached": "The free plan is limited to {limit} budgets. Upgrade to Pro for unlimited budgets.",
   "budget_alerts_verify_hint": "Over-budget alert emails are only sent to a verified email address. Verify your email to receive them.",
   "email_budget_alert_subject": "Over budget: {category} — Finance Tracker",
-  "email_budget_alert_body": "Your {category} budget is over budget for {month}.\n\nSpent: {spent}\nLimit: {limit}\n\nSee your budgets:\n\n{link}\n\nYou'll get at most one alert per budget each month."
+  "email_budget_alert_body": "Your {category} budget is over budget for {month}.\n\nSpent: {spent}\nLimit: {limit}\n\nSee your budgets:\n\n{link}\n\nYou'll get at most one alert per budget each month.",
+  "delete_will_remove_budgets": "This will also remove {n} budget(s) on this category and its sub-categories."
 }
