@@ -369,6 +369,12 @@ test.describe("Budgets", () => {
         path.join(__dirname, "fixtures", "images", "receipt-test.png"),
       );
     await expect(page.getByText("Matching transaction found")).toBeVisible();
+    await expect(
+      page.getByTestId("item-category-0").locator("option:checked"),
+    ).toHaveText("Alcohol");
+    await expect(
+      page.getByTestId("item-category-1").locator("option:checked"),
+    ).toHaveText("Vegetables");
     await page.getByTestId("save-receipt-btn").click();
     await expect(page.getByText("Receipt saved successfully!")).toBeVisible();
 
