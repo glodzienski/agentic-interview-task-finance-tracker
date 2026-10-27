@@ -1,4 +1,8 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { test, expect, type Page } from "./fixtures";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 
 // Budgets measure the current Budget month in the browser's local time, so
@@ -341,6 +345,43 @@ test.describe("Budgets", () => {
 
     await page.goto("/budgets");
     await expect(page.getByText("No budgets yet")).toBeVisible();
+  });
+
+  test("counts scanned receipt items toward their own categories' Budgets", async ({
+    page,
+  }) => {
+    // The fake AI scan yields Product A (21.00, Alcohol) and Product B
+    // (15.99, Vegetables) — both under Groceries. Linked to a 36.99 expense
+    // filed under Transport, the items move that Spending to Groceries.
+    await addBudget(page, "— Vegetables", "100");
+    await addBudget(page, "Groceries", "100");
+    await addBudget(page, "Transport", "100");
+    await addTransaction(page, {
+      description: "Hypermarket",
+      amount: "36.99",
+      category: "Transport",
+    });
+
+    await page.goto("/receipts/scan");
+    await page
+      .getByTestId("file-input")
+      .setInputFiles(
+        path.join(__dirname, "fixtures", "images", "receipt-test.png"),
+      );
+    await expect(page.getByText("Matching transaction found")).toBeVisible();
+    await page.getByTestId("save-receipt-btn").click();
+    await expect(page.getByText("Receipt saved successfully!")).toBeVisible();
+
+    await page.goto("/budgets");
+    await expect(
+      budgetCard(page, "Vegetables").getByTestId("budget-spent"),
+    ).toHaveText("15.99 PLN of 100.00 PLN");
+    await expect(
+      budgetCard(page, "Groceries").getByTestId("budget-spent"),
+    ).toHaveText("36.99 PLN of 100.00 PLN");
+    await expect(
+      budgetCard(page, "Transport").getByTestId("budget-spent"),
+    ).toHaveText("0.00 PLN of 100.00 PLN");
   });
 
   test("clearly shows when a Budget is over budget", async ({ page }) => {

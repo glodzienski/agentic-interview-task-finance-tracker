@@ -1,4 +1,4 @@
-import { and, asc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, lt, sql, type SQLWrapper } from "drizzle-orm";
 import { db, schema } from "#/db";
 import { ownedEntityExists } from "#/server/ownership.server";
 
@@ -61,40 +61,104 @@ function monthBounds(month: string): { from: string; to: string } {
 
 // --- Spending ---
 
-/** Spending in the Budget month keyed by `${categoryId}|${currency}`. */
+/**
+ * Spending in the Budget month keyed by `${categoryId}|${currency}`, using
+ * the Attributed category rule (CONTEXT.md, ADR-0001): each categorised
+ * receipt item counts toward its own category; uncategorised items and any
+ * amount the items don't cover count toward the transaction's category.
+ * Item totals are not capped at the transaction amount.
+ */
 async function spendingByCategoryAndCurrency(
   userId: string,
   month: string,
 ): Promise<Map<string, number>> {
   const { from, to } = monthBounds(month);
-  const rows = await db
+  const monthSpending = and(
+    eq(schema.transactions.user_id, userId),
+    gte(schema.transactions.date, from),
+    lt(schema.transactions.date, to),
+    sql`${schema.transactions.amount_minor} < 0`,
+  );
+  const transactions = await db
     .select({
+      id: schema.transactions.id,
       categoryId: schema.transactions.category_id,
       currency: schema.accounts.currency,
-      // SUM over integers is bigint in Postgres (returned as a string) — map back to number.
-      spent: sql<number>`SUM(-${schema.transactions.amount_minor})`.mapWith(Number),
+      amountMinor: schema.transactions.amount_minor,
     })
     .from(schema.transactions)
     .innerJoin(
       schema.accounts,
       eq(schema.transactions.account_id, schema.accounts.id),
     )
-    .where(
-      and(
-        eq(schema.transactions.user_id, userId),
-        gte(schema.transactions.date, from),
-        lt(schema.transactions.date, to),
-        sql`${schema.transactions.amount_minor} < 0`,
-      ),
-    )
-    .groupBy(schema.transactions.category_id, schema.accounts.currency);
+    .where(monthSpending);
+
+  // A subquery rather than a list of ids: no bind-parameter limit to hit.
+  const itemsByTransaction = await receiptItemsByTransaction(
+    userId,
+    db
+      .select({ id: schema.transactions.id })
+      .from(schema.transactions)
+      .where(monthSpending),
+  );
 
   const spending = new Map<string, number>();
-  for (const row of rows) {
-    if (!row.categoryId) continue;
-    spending.set(`${row.categoryId}|${row.currency}`, row.spent);
+  const add = (categoryId: string | null, currency: string | null, minor: number) => {
+    // Uncategorised Spending counts toward no Budget.
+    if (!categoryId || minor <= 0) return;
+    const key = `${categoryId}|${currency}`;
+    spending.set(key, (spending.get(key) ?? 0) + minor);
+  };
+
+  for (const txn of transactions) {
+    const spent = -txn.amountMinor;
+    const items = itemsByTransaction.get(txn.id) ?? [];
+    let toTransactionCategory = spent;
+    for (const item of items) {
+      if (item.categoryId) {
+        add(item.categoryId, txn.currency, item.totalPriceMinor);
+        toTransactionCategory -= item.totalPriceMinor;
+      }
+    }
+    // Uncategorised items stay in toTransactionCategory, as does the
+    // uncovered remainder; a negative remainder (items exceed the
+    // transaction) adds nothing.
+    add(txn.categoryId, txn.currency, toTransactionCategory);
   }
   return spending;
+}
+
+/** Receipt items of the given transactions, grouped by transaction id. */
+async function receiptItemsByTransaction(
+  userId: string,
+  transactionIds: SQLWrapper,
+): Promise<Map<string, { categoryId: string | null; totalPriceMinor: number }[]>> {
+  const grouped = new Map<
+    string,
+    { categoryId: string | null; totalPriceMinor: number }[]
+  >();
+  const rows = await db
+    .select({
+      transactionId: schema.receipts.transaction_id,
+      categoryId: schema.receipt_items.category_id,
+      totalPriceMinor: schema.receipt_items.total_price_minor,
+    })
+    .from(schema.receipt_items)
+    .innerJoin(
+      schema.receipts,
+      eq(schema.receipt_items.receipt_id, schema.receipts.id),
+    )
+    .where(
+      and(
+        eq(schema.receipts.user_id, userId),
+        inArray(schema.receipts.transaction_id, transactionIds),
+      ),
+    );
+  for (const row of rows) {
+    if (!row.transactionId) continue;
+    grouped.set(row.transactionId, [...(grouped.get(row.transactionId) ?? []), row]);
+  }
+  return grouped;
 }
 
 /** Each category id mapped to itself plus all its descendants (any depth). */

@@ -9,7 +9,10 @@ export default defineConfig({
   // in parallel. The setup project stays serial because it exercises the
   // global "no users yet" redirect.
   workers: process.env.CI ? 4 : undefined,
-  reporter: "html",
+  // Never auto-open the HTML report: on failure it serves the report and
+  // blocks until Ctrl+C, which hangs `pnpm run check`. Open it manually with
+  // `pnpm exec playwright show-report`.
+  reporter: [["list"], ["html", { open: "never" }]],
   use: {
     baseURL: "http://127.0.0.1:3000",
     trace: "on-first-retry",

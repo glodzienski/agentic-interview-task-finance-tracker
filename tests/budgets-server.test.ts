@@ -36,21 +36,47 @@ const insertCategory = (
     .values({ id, user_id: owner, name: id, parent_id: parentId });
 
 let txnSeq = 0;
-const insertTransaction = (
+async function insertTransaction(
   accountId: string,
   categoryId: string | null,
   amountMinor: number,
   date: string,
   owner = userId,
-) =>
-  db.insert(schema.transactions).values({
-    id: `budgets-txn-${++txnSeq}`,
+) {
+  const id = `budgets-txn-${++txnSeq}`;
+  await db.insert(schema.transactions).values({
+    id,
     user_id: owner,
     account_id: accountId,
     category_id: categoryId,
     amount_minor: amountMinor,
     date,
   });
+  return id;
+}
+
+let receiptSeq = 0;
+/** Attach a receipt with the given items (amount, category) to a transaction. */
+async function insertReceipt(
+  transactionId: string,
+  items: Array<[totalPriceMinor: number, categoryId: string | null]>,
+) {
+  const receiptId = `budgets-rcpt-${++receiptSeq}`;
+  await db.insert(schema.receipts).values({
+    id: receiptId,
+    user_id: userId,
+    transaction_id: transactionId,
+  });
+  for (const [i, [totalPriceMinor, categoryId]] of items.entries()) {
+    await db.insert(schema.receipt_items).values({
+      id: `${receiptId}-item-${i}`,
+      receipt_id: receiptId,
+      name: `item ${i}`,
+      total_price_minor: totalPriceMinor,
+      category_id: categoryId,
+    });
+  }
+}
 
 async function budgetFor(categoryId: string, limitMinor: number, currency = "PLN") {
   const result = await createBudget(userId, { categoryId, currency, limitMinor });
@@ -347,5 +373,90 @@ describe("removing a Budget", () => {
       code: "budget_not_found",
     });
     expect((await getBudgetOverview(otherUserId, "2026-10")).budgets).toHaveLength(1);
+  });
+});
+
+describe("budget overview: receipt items (ADR-0001)", () => {
+  beforeEach(async () => {
+    await insertCategory("groceries");
+    await insertCategory("household");
+  });
+
+  it("counts each categorised item toward its own category, the rest toward the transaction's", async () => {
+    const groceries = await budgetFor("groceries", 100000);
+    const household = await budgetFor("household", 100000);
+    const txn = await insertTransaction("pln-acc", "groceries", -20000, "2026-10-10");
+    // 150 food + 30 toaster + 5 uncategorised = 185; 15 not covered by items.
+    await insertReceipt(txn, [
+      [15000, "groceries"],
+      [3000, "household"],
+      [500, null],
+    ]);
+
+    expect((await statusOf(household)).spentMinor).toBe(3000);
+    expect((await statusOf(groceries)).spentMinor).toBe(17000);
+  });
+
+  it("counts an item toward its category even in another branch of the tree", async () => {
+    await insertCategory("home");
+    await insertCategory("appliances", "home");
+    const home = await budgetFor("home", 100000);
+    const txn = await insertTransaction("pln-acc", "groceries", -5000, "2026-10-10");
+    await insertReceipt(txn, [[2000, "appliances"]]);
+
+    expect((await statusOf(home)).spentMinor).toBe(2000);
+  });
+
+  it("counts items in full when they add up to more than the transaction", async () => {
+    const groceries = await budgetFor("groceries", 100000);
+    const household = await budgetFor("household", 100000);
+    const txn = await insertTransaction("pln-acc", "groceries", -1000, "2026-10-10");
+    await insertReceipt(txn, [
+      [800, "household"],
+      [700, "groceries"],
+    ]);
+
+    expect((await statusOf(household)).spentMinor).toBe(800);
+    expect((await statusOf(groceries)).spentMinor).toBe(700);
+  });
+
+  it("counts only the items of an uncategorised transaction", async () => {
+    const household = await budgetFor("household", 100000);
+    const groceries = await budgetFor("groceries", 100000);
+    const txn = await insertTransaction("pln-acc", null, -9000, "2026-10-10");
+    await insertReceipt(txn, [
+      [2500, "household"],
+      [1000, null],
+    ]);
+
+    expect((await statusOf(household)).spentMinor).toBe(2500);
+    expect((await statusOf(groceries)).spentMinor).toBe(0);
+  });
+
+  it("counts a transaction whose receipt has no items toward its own category", async () => {
+    const groceries = await budgetFor("groceries", 100000);
+    const txn = await insertTransaction("pln-acc", "groceries", -4200, "2026-10-10");
+    await insertReceipt(txn, []);
+
+    expect((await statusOf(groceries)).spentMinor).toBe(4200);
+  });
+
+  it("ignores receipt items on income and refunds", async () => {
+    const household = await budgetFor("household", 100000);
+    const refund = await insertTransaction("pln-acc", "groceries", 3000, "2026-10-10");
+    await insertReceipt(refund, [[3000, "household"]]);
+
+    expect((await statusOf(household)).spentMinor).toBe(0);
+  });
+
+  it("applies the Budget's currency and month to receipt items too", async () => {
+    await insertAccount("eur-acc", "EUR");
+    const household = await budgetFor("household", 100000);
+    const eurTxn = await insertTransaction("eur-acc", "groceries", -5000, "2026-10-10");
+    await insertReceipt(eurTxn, [[5000, "household"]]);
+    const lastMonth = await insertTransaction("pln-acc", "groceries", -5000, "2026-09-30");
+    await insertReceipt(lastMonth, [[5000, "household"]]);
+
+    expect((await statusOf(household)).spentMinor).toBe(0);
   });
 });
