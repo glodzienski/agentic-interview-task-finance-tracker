@@ -305,8 +305,8 @@ export const deleteCategory = createServerFn({ method: "POST" })
       .delete(schema.categorization_rules)
       .where(inArray(schema.categorization_rules.category_id, allIdsToDelete));
 
-    // Budgets on deleted categories go with them — they never follow
-    // reassigned transactions (see CONTEXT.md, Budget).
+    // Budgets on deleted categories go with them (alert history cascades) —
+    // they never follow reassigned transactions (see CONTEXT.md, Budget).
     await db
       .delete(schema.budgets)
       .where(

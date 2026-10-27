@@ -3,11 +3,14 @@
 // Running in node environment ensures the real server logic executes against the in-memory DB.
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { eq } from "drizzle-orm";
 import { db, schema } from "../src/db/index.ts";
+import { getCapturedEmails } from "../src/server/email.ts";
 import { hardDeleteUser } from "../src/server/compliance.server.ts";
 import {
   createBudget,
   deleteBudget,
+  evaluateBudgetAlerts,
   getBudgetOverview,
   updateBudgetLimit,
 } from "../src/server/budgets.server.ts";
@@ -458,5 +461,220 @@ describe("budget overview: receipt items (ADR-0001)", () => {
     await insertReceipt(lastMonth, [[5000, "household"]]);
 
     expect((await statusOf(household)).spentMinor).toBe(0);
+  });
+});
+
+describe("over-budget alerts", () => {
+  // 2026-10-15 12:00 UTC: mid-month, so only October is current anywhere.
+  const midOctober = new Date("2026-10-15T12:00:00Z");
+  let emailSeq = 0;
+  let email: string;
+
+  /** Give the test user a fresh, unique email so captured mail doesn't mix. */
+  async function setEmail(verified = true, deletionRequested = false) {
+    email = `budgets-alert-${++emailSeq}-${Date.now()}@example.com`;
+    await db
+      .update(schema.users)
+      .set({
+        email,
+        email_verified_at: verified ? new Date() : null,
+        deletion_requested_at: deletionRequested ? new Date() : null,
+      })
+      .where(eq(schema.users.id, userId));
+  }
+
+  const sentAlerts = () => getCapturedEmails(email);
+  const alertRows = () =>
+    db
+      .select()
+      .from(schema.budget_alerts)
+      .where(eq(schema.budget_alerts.user_id, userId));
+
+  beforeEach(async () => {
+    await insertCategory("groceries");
+    await setEmail();
+  });
+
+  it("emails once when a Budget goes over budget, naming category, limit, spent and month", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12550, "2026-10-10");
+
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    const emails = sentAlerts();
+    expect(emails).toHaveLength(1);
+    expect(emails[0].subject).toContain("groceries");
+    expect(emails[0].text).toContain("groceries");
+    expect(emails[0].text).toContain("100.00 PLN");
+    expect(emails[0].text).toContain("125.50 PLN");
+    expect(emails[0].text).toContain("October 2026");
+    expect(emails[0].text).toContain("/budgets");
+    expect(await alertRows()).toMatchObject([{ month: "2026-10" }]);
+  });
+
+  it("sends nothing while Spending is within the limit, including exactly at it", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -10000, "2026-10-10");
+
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    expect(sentAlerts()).toHaveLength(0);
+    expect(await alertRows()).toHaveLength(0);
+  });
+
+  it("sends nothing more that month for further over-limit Spending", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await evaluateBudgetAlerts(userId, midOctober);
+    await insertTransaction("pln-acc", "groceries", -5000, "2026-10-11");
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    expect(sentAlerts()).toHaveLength(1);
+  });
+
+  it("sends nothing more after dipping under and going over again in the same month", async () => {
+    const id = await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await evaluateBudgetAlerts(userId, midOctober);
+    await updateBudgetLimit(userId, id, 20000);
+    await evaluateBudgetAlerts(userId, midOctober);
+    await updateBudgetLimit(userId, id, 10000);
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    expect(sentAlerts()).toHaveLength(1);
+  });
+
+  it("alerts each over-budget Budget separately, and again in the next month", async () => {
+    await insertCategory("transport");
+    await budgetFor("groceries", 10000);
+    await budgetFor("transport", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await insertTransaction("pln-acc", "transport", -12000, "2026-10-10");
+    await evaluateBudgetAlerts(userId, midOctober);
+    expect(sentAlerts()).toHaveLength(2);
+
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-11-10");
+    await evaluateBudgetAlerts(userId, new Date("2026-11-15T12:00:00Z"));
+    expect(sentAlerts()).toHaveLength(3);
+  });
+
+  it("sends exactly one email when evaluations run concurrently", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+
+    await Promise.all([
+      evaluateBudgetAlerts(userId, midOctober),
+      evaluateBudgetAlerts(userId, midOctober),
+      evaluateBudgetAlerts(userId, midOctober),
+    ]);
+
+    expect(sentAlerts()).toHaveLength(1);
+    expect(await alertRows()).toHaveLength(1);
+  });
+
+  it("releases the claim when sending fails, so a later evaluation sends", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+
+    await evaluateBudgetAlerts(userId, midOctober, {
+      send: () => Promise.reject(new Error("provider down")),
+    });
+    expect(await alertRows()).toHaveLength(0);
+
+    await evaluateBudgetAlerts(userId, midOctober);
+    expect(sentAlerts()).toHaveLength(1);
+    expect(await alertRows()).toHaveLength(1);
+  });
+
+  it.each([
+    ["without an email", () => db.update(schema.users).set({ email: null }).where(eq(schema.users.id, userId))],
+    ["with an unverified email", () => setEmail(false)],
+    ["with deletion pending", () => setEmail(true, true)],
+  ])("sends nothing and claims nothing for a user %s", async (_, makeIneligible) => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await makeIneligible();
+
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    expect(sentAlerts()).toHaveLength(0);
+    expect(await alertRows()).toHaveLength(0);
+    expect((await getBudgetOverview(userId, "2026-10")).alertsEnabled).toBe(false);
+  });
+
+  it("sends the pending alert once the user verifies their email later in the month", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await setEmail(false);
+    await evaluateBudgetAlerts(userId, midOctober);
+    expect(sentAlerts()).toHaveLength(0);
+
+    await db
+      .update(schema.users)
+      .set({ email_verified_at: new Date() })
+      .where(eq(schema.users.id, userId));
+    await evaluateBudgetAlerts(userId, new Date("2026-10-20T12:00:00Z"));
+
+    expect(sentAlerts()).toHaveLength(1);
+    expect((await getBudgetOverview(userId, "2026-10")).alertsEnabled).toBe(true);
+  });
+
+  it("sends nothing when late Spending pushes a past month over budget", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-09-10");
+
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    expect(sentAlerts()).toHaveLength(0);
+  });
+
+  it("around the turn of the month, covers both months current somewhere on Earth", async () => {
+    await insertCategory("transport");
+    await budgetFor("groceries", 10000);
+    await budgetFor("transport", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-31");
+    await insertTransaction("pln-acc", "transport", -12000, "2026-11-01");
+
+    // 2026-11-01 05:00 UTC: still October at UTC−12, already November in UTC.
+    await evaluateBudgetAlerts(userId, new Date("2026-11-01T05:00:00Z"));
+
+    expect((await alertRows()).map((r) => r.month).sort()).toEqual([
+      "2026-10",
+      "2026-11",
+    ]);
+  });
+
+  it("treats a month as current once it has started in UTC+14", async () => {
+    await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-11-01");
+
+    // 2026-10-31 09:00 UTC is 23:00 in UTC+14 — November hasn't started yet.
+    await evaluateBudgetAlerts(userId, new Date("2026-10-31T09:00:00Z"));
+    expect(sentAlerts()).toHaveLength(0);
+    // 10:30 UTC is 00:30 on 1 November in UTC+14.
+    await evaluateBudgetAlerts(userId, new Date("2026-10-31T10:30:00Z"));
+    expect(sentAlerts()).toHaveLength(1);
+  });
+
+  it("never alerts on another user's Spending", async () => {
+    await insertAccount("other-acc", "PLN", otherUserId);
+    await insertCategory("other-groceries", null, otherUserId);
+    await budgetFor("groceries", 10000);
+    await insertTransaction("other-acc", "other-groceries", -50000, "2026-10-10", otherUserId);
+
+    await evaluateBudgetAlerts(userId, midOctober);
+
+    expect(sentAlerts()).toHaveLength(0);
+  });
+
+  it("deleting a Budget removes its alert history", async () => {
+    const id = await budgetFor("groceries", 10000);
+    await insertTransaction("pln-acc", "groceries", -12000, "2026-10-10");
+    await evaluateBudgetAlerts(userId, midOctober);
+    expect(await alertRows()).toHaveLength(1);
+
+    await deleteBudget(userId, id);
+
+    expect(await alertRows()).toHaveLength(0);
   });
 });

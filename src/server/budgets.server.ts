@@ -1,11 +1,16 @@
 import { and, asc, eq, gte, inArray, lt, sql, type SQLWrapper } from "drizzle-orm";
 import { db, schema } from "#/db";
+import { formatMoney } from "#/lib/money";
+import { m } from "#/paraglide/messages";
+import { sendEmail, type EmailMessage } from "#/server/email";
+import { env } from "#/server/env";
+import { getLogger } from "#/server/logger";
 import { ownedEntityExists } from "#/server/ownership.server";
 
 //
 // Budgets: monthly Spending limits per category and currency. Vocabulary
-// (Spending, Budget, Budget month, Over budget) is defined in CONTEXT.md;
-// currency semantics in ADR-0002. Imported only from budgets.functions.ts
+// (Spending, Budget, Budget month, Over budget, Over-budget alert) is defined
+// in CONTEXT.md; currency semantics in ADR-0002. Imported only from budgets.functions.ts
 // handlers and unit tests — never from route components.
 
 // --- Types ---
@@ -32,6 +37,8 @@ export interface BudgetOverview {
   budgets: BudgetStatus[];
   /** Currencies offered when creating a Budget (account currencies, PLN fallback). */
   currencies: string[];
+  /** Whether Over-budget alerts can reach the user (drives the verify-email hint). */
+  alertsEnabled: boolean;
 }
 
 /** Matches the accounts.currency column default. */
@@ -201,6 +208,19 @@ export async function getBudgetOverview(
   userId: string,
   month: string,
 ): Promise<BudgetOverview> {
+  const [budgets, currencies, alertRecipient] = await Promise.all([
+    budgetStatuses(userId, month),
+    accountCurrencies(userId),
+    alertRecipientOf(userId),
+  ]);
+  return { budgets, currencies, alertsEnabled: alertRecipient !== null };
+}
+
+/** Every Budget's status in the Budget month, problems first. */
+async function budgetStatuses(
+  userId: string,
+  month: string,
+): Promise<BudgetStatus[]> {
   const budgetRows = await db
     .select({
       id: schema.budgets.id,
@@ -245,7 +265,7 @@ export async function getBudgetOverview(
       a.categoryName.localeCompare(b.categoryName),
   );
 
-  return { budgets, currencies: await accountCurrencies(userId) };
+  return budgets;
 }
 
 /** Currencies a new Budget can use: those of the user's accounts. */
@@ -326,9 +346,137 @@ export async function deleteBudget(
   userId: string,
   budgetId: string,
 ): Promise<BudgetMutationResult> {
+  // Its alert history goes with it (ON DELETE CASCADE).
   const deleted = await db
     .delete(schema.budgets)
     .where(ownedBudget(userId, budgetId))
     .returning({ id: schema.budgets.id });
   return deleted.length > 0 ? { success: true } : BUDGET_NOT_FOUND;
+}
+
+// --- Over-budget alerts ---
+
+const HOUR_MS = 60 * 60 * 1000;
+
+/**
+ * Budget months that are current somewhere on Earth at `now` — from UTC−12
+ * to UTC+14. One month, or two around the turn of a month. Only these can
+ * trigger an Over-budget alert; late Spending in a past month sends nothing.
+ */
+function monthsCurrentSomewhere(now: Date): string[] {
+  const monthOf = (t: number) => new Date(t).toISOString().slice(0, 7);
+  return [
+    ...new Set([
+      monthOf(now.getTime() - 12 * HOUR_MS),
+      monthOf(now.getTime() + 14 * HOUR_MS),
+    ]),
+  ];
+}
+
+/**
+ * The address Over-budget alerts go to: a verified email with no account
+ * deletion pending — never a possibly mistyped address, never someone who
+ * asked to leave. Null when the user can't receive alerts.
+ */
+async function alertRecipientOf(userId: string): Promise<string | null> {
+  const [user] = await db
+    .select({
+      email: schema.users.email,
+      emailVerifiedAt: schema.users.email_verified_at,
+      deletionRequestedAt: schema.users.deletion_requested_at,
+    })
+    .from(schema.users)
+    .where(eq(schema.users.id, userId))
+    .limit(1);
+  if (!user?.email || !user.emailVerifiedAt || user.deletionRequestedAt) {
+    return null;
+  }
+  return user.email;
+}
+
+function formatMonthForEmail(month: string): string {
+  const [year, mon] = month.split("-").map(Number);
+  return new Date(Date.UTC(year, mon - 1, 1)).toLocaleDateString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function budgetAlertEmail(
+  to: string,
+  budget: BudgetStatus,
+  month: string,
+): EmailMessage {
+  return {
+    to,
+    subject: m.email_budget_alert_subject({ category: budget.categoryName }),
+    text: m.email_budget_alert_body({
+      category: budget.categoryName,
+      month: formatMonthForEmail(month),
+      spent: formatMoney(budget.spentMinor, budget.currency),
+      limit: formatMoney(budget.limitMinor, budget.currency),
+      link: `${env.email.baseUrl}/budgets`,
+    }),
+  };
+}
+
+/**
+ * Send the Over-budget alerts due at `now`: one per over-budget Budget per
+ * current Budget month, ever. Idempotent and safe to run concurrently — each
+ * alert is claimed through the (budget, month) unique index before sending,
+ * and only the claim's winner sends. A failed send releases the claim so a
+ * later evaluation retries. Users who can't receive alerts are skipped
+ * without claiming anything, so the alert still goes out once they can.
+ */
+export async function evaluateBudgetAlerts(
+  userId: string,
+  now: Date,
+  { send = sendEmail }: { send?: (message: EmailMessage) => Promise<void> } = {},
+): Promise<void> {
+  const recipient = await alertRecipientOf(userId);
+  if (!recipient) return;
+
+  for (const month of monthsCurrentSomewhere(now)) {
+    const budgets = await budgetStatuses(userId, month);
+    for (const budget of budgets.filter((b) => b.isOverBudget)) {
+      const claimed = await db
+        .insert(schema.budget_alerts)
+        .values({
+          id: crypto.randomUUID(),
+          user_id: userId,
+          budget_id: budget.id,
+          month,
+        })
+        .onConflictDoNothing()
+        .returning({ id: schema.budget_alerts.id });
+      if (claimed.length === 0) continue;
+
+      try {
+        await send(budgetAlertEmail(recipient, budget, month));
+      } catch (error) {
+        const log = getLogger().child({ userId, budgetId: budget.id, month });
+        log.error({ err: error }, "failed to send over-budget alert");
+        // Release the claim so a later evaluation retries. If even that
+        // fails, the alert is lost for this month — but the remaining
+        // Budgets are still evaluated.
+        await db
+          .delete(schema.budget_alerts)
+          .where(eq(schema.budget_alerts.id, claimed[0].id))
+          .catch((releaseError) =>
+            log.error({ err: releaseError }, "failed to release over-budget alert claim"),
+          );
+      }
+    }
+  }
+}
+
+/**
+ * Fire-and-forget `evaluateBudgetAlerts` after a user action that may push a
+ * Budget over: the action never waits for, or fails because of, the alert.
+ */
+export function checkBudgetAlertsInBackground(userId: string): void {
+  void evaluateBudgetAlerts(userId, new Date()).catch((error) =>
+    getLogger().error({ err: error, userId }, "over-budget alert check failed"),
+  );
 }

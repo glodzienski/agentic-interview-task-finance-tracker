@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { requireUserId } from "#/server/session";
 import {
+  checkBudgetAlertsInBackground,
   createBudget as createBudgetForUser,
   deleteBudget as deleteBudgetForUser,
   getBudgetOverview as getBudgetOverviewForUser,
@@ -48,14 +49,18 @@ export const createBudget = createServerFn({ method: "POST" })
   .inputValidator(createBudgetSchema)
   .handler(async ({ data }) => {
     const userId = await requireUserId();
-    return createBudgetForUser(userId, data);
+    const result = await createBudgetForUser(userId, data);
+    if ("success" in result) checkBudgetAlertsInBackground(userId);
+    return result;
   });
 
 export const updateBudgetLimit = createServerFn({ method: "POST" })
   .inputValidator(updateBudgetLimitSchema)
   .handler(async ({ data }) => {
     const userId = await requireUserId();
-    return updateBudgetLimitForUser(userId, data.id, data.limitMinor);
+    const result = await updateBudgetLimitForUser(userId, data.id, data.limitMinor);
+    if ("success" in result) checkBudgetAlertsInBackground(userId);
+    return result;
   });
 
 export const deleteBudget = createServerFn({ method: "POST" })
