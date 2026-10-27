@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
@@ -484,10 +484,14 @@ function BudgetsPage() {
         const result = await createMutation.mutateAsync(data);
         if ("error" in result) {
           setFormError(
-            result.code === "budget_duplicate"
-              ? m.budget_duplicate()
-              : m.budget_category_not_found(),
+            result.code === "budget_limit_reached"
+              ? m.budget_limit_reached({ limit: result.limit })
+              : result.code === "budget_duplicate"
+                ? m.budget_duplicate()
+                : m.budget_category_not_found(),
           );
+          // A limit hit means the page's count was stale (e.g. another tab).
+          queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
           return;
         }
       }
@@ -511,6 +515,10 @@ function BudgetsPage() {
   };
 
   const budgets = overview?.budgets ?? [];
+  // Free plan: creating is blocked at the limit; existing Budgets above it
+  // (after a downgrade) keep working.
+  const maxBudgets = overview?.maxBudgets ?? null;
+  const atBudgetLimit = maxBudgets !== null && budgets.length >= maxBudgets;
 
   return (
     <div className="min-h-screen">
@@ -524,19 +532,28 @@ function BudgetsPage() {
               </p>
             )}
           </div>
-          <Button onClick={handleAdd} disabled={!overview}>
-            <svg
-              className="size-4"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={2}
-              aria-hidden="true"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-            </svg>
-            {m.add_budget()}
-          </Button>
+          <div className="flex flex-col items-end gap-1">
+            <Button onClick={handleAdd} disabled={!overview || atBudgetLimit}>
+              <svg
+                className="size-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+                aria-hidden="true"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+              {m.add_budget()}
+            </Button>
+            {atBudgetLimit && maxBudgets !== null && (
+              <p className="text-xs text-muted-foreground" data-testid="budget-limit-hint">
+                <Link to="/billing" className="font-medium text-primary hover:underline">
+                  {m.budget_free_plan_limit({ limit: maxBudgets })}
+                </Link>
+              </p>
+            )}
+          </div>
         </div>
       </header>
 

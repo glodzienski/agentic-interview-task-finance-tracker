@@ -403,3 +403,122 @@ test.describe("Budgets", () => {
     ).toHaveAttribute("aria-valuenow", "100");
   });
 });
+
+// Free plan: up to 3 Budgets. Plans are switched with the TEST_MODE
+// /test-set-plan override, which writes what a verified webhook would.
+test.describe("Budgets plan limit", () => {
+  const FREE_CATEGORIES = ["Housing", "Health", "Shopping"];
+
+  test.beforeEach(async ({ page, signedInUser: _signedInUser }) => {
+    await page.goto("/budgets");
+  });
+
+  function addBudgetButton(page: Page) {
+    return page.getByRole("banner").getByRole("button", { name: "Add Budget" });
+  }
+
+  test("disables Add Budget at 3 Budgets on the free plan and links to Billing", async ({
+    page,
+  }) => {
+    for (const category of FREE_CATEGORIES.slice(0, 2)) {
+      await addBudget(page, category, "100");
+    }
+    await expect(addBudgetButton(page)).toBeEnabled();
+    await expect(page.getByTestId("budget-limit-hint")).toBeHidden();
+
+    await addBudget(page, FREE_CATEGORIES[2], "100");
+    await expect(page.getByTestId("budget-card")).toHaveCount(3);
+    await expect(addBudgetButton(page)).toBeDisabled();
+    const hint = page.getByTestId("budget-limit-hint");
+    await expect(hint).toHaveText("Free plan: 3 budgets — Upgrade to Pro");
+
+    await hint.getByRole("link", { name: /Upgrade to Pro/ }).click();
+    await expect(page).toHaveURL("/billing");
+  });
+
+  test("rejects a 4th Budget created from a stale page", async ({ page }) => {
+    for (const category of FREE_CATEGORIES.slice(0, 2)) {
+      await addBudget(page, category, "100");
+    }
+    // Open the dialog while the page still shows 2 Budgets…
+    const dialog = await openNewBudgetDialog(page);
+
+    // …then fill the last free slot from another tab of the same session.
+    const otherTab = await page.context().newPage();
+    await addBudget(otherTab, FREE_CATEGORIES[2], "100");
+    await otherTab.close();
+
+    await dialog.getByLabel("Category").selectOption("Entertainment");
+    await dialog.getByLabel("Monthly limit").fill("100");
+    await dialog.getByRole("button", { name: "Create Budget" }).click();
+    await expect(dialog.getByRole("alert")).toHaveText(
+      "The free plan is limited to 3 budgets. Upgrade to Pro for unlimited budgets.",
+    );
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+
+    await expect(page.getByTestId("budget-card")).toHaveCount(3);
+    await expect(budgetCard(page, "Entertainment")).toBeHidden();
+    await expect(addBudgetButton(page)).toBeDisabled();
+  });
+
+  test("lets Pro users create more than 3 Budgets", async ({ page }) => {
+    expect((await page.request.post("/test-set-plan?plan=pro")).ok()).toBe(true);
+
+    for (const category of [...FREE_CATEGORIES, "Entertainment"]) {
+      await addBudget(page, category, "100");
+    }
+    await expect(page.getByTestId("budget-card")).toHaveCount(4);
+    await expect(addBudgetButton(page)).toBeEnabled();
+    await expect(page.getByTestId("budget-limit-hint")).toBeHidden();
+  });
+
+  test("keeps every Budget working after a downgrade, blocking only new ones", async ({
+    page,
+  }) => {
+    expect((await page.request.post("/test-set-plan?plan=pro")).ok()).toBe(true);
+    for (const category of [...FREE_CATEGORIES, "Entertainment"]) {
+      await addBudget(page, category, "100");
+    }
+    expect(
+      (await page.request.post("/test-set-plan?plan=free&status=canceled")).ok(),
+    ).toBe(true);
+
+    await addTransaction(page, {
+      description: "Cinema night",
+      amount: "150",
+      category: "Entertainment",
+    });
+    await page.goto("/budgets");
+    await expect(page.getByTestId("budget-card")).toHaveCount(4);
+    const entertainment = budgetCard(page, "Entertainment");
+    await expect(entertainment.getByText("Over budget")).toBeVisible();
+    await expect(addBudgetButton(page)).toBeDisabled();
+    await expect(page.getByTestId("budget-limit-hint")).toBeVisible();
+
+    // Still editable above the limit.
+    await entertainment.getByRole("button", { name: "Edit" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Budget" });
+    await dialog.getByLabel("Monthly limit").fill("200");
+    await dialog.getByRole("button", { name: "Save Changes" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(entertainment.getByTestId("budget-remaining")).toHaveText(
+      "50.00 PLN left",
+    );
+
+    // Deleting down to 3 is still at the limit; below it, creating is back.
+    const confirm = page.getByRole("alertdialog", { name: "Delete Budget" });
+    const remove = async (category: string) => {
+      await budgetCard(page, category).getByRole("button", { name: "Delete" }).click();
+      await confirm.getByRole("button", { name: "Delete" }).click();
+      await expect(confirm).toBeHidden();
+      await expect(budgetCard(page, category)).toBeHidden();
+    };
+    await remove("Housing");
+    await expect(page.getByTestId("budget-card")).toHaveCount(3);
+    await expect(addBudgetButton(page)).toBeDisabled();
+    await remove("Health");
+    await expect(page.getByTestId("budget-card")).toHaveCount(2);
+    await expect(addBudgetButton(page)).toBeEnabled();
+    await expect(page.getByTestId("budget-limit-hint")).toBeHidden();
+  });
+});

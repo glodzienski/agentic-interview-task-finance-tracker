@@ -1,5 +1,6 @@
 import { and, asc, eq, gte, inArray, lt, sql, type SQLWrapper } from "drizzle-orm";
 import { db, schema } from "#/db";
+import { checkBudgetLimit, getEntitlements } from "#/server/billing.server";
 import { ownedEntityExists } from "#/server/ownership.server";
 
 //
@@ -32,6 +33,8 @@ export interface BudgetOverview {
   budgets: BudgetStatus[];
   /** Currencies offered when creating a Budget (account currencies, PLN fallback). */
   currencies: string[];
+  /** Budgets the user's plan allows; null = unlimited (Pro). */
+  maxBudgets: number | null;
 }
 
 /** Matches the accounts.currency column default. */
@@ -48,7 +51,8 @@ export type CreateBudgetResult =
   | {
       error: string;
       code: "category_not_found" | "budget_duplicate";
-    };
+    }
+  | { error: string; code: "budget_limit_reached"; limit: number };
 
 // --- Budget month ---
 
@@ -217,9 +221,11 @@ export async function getBudgetOverview(
     )
     .where(eq(schema.budgets.user_id, userId));
 
-  const [spending, subtrees] = await Promise.all([
+  const [spending, subtrees, currencies, entitlements] = await Promise.all([
     spendingByCategoryAndCurrency(userId, month),
     categorySubtrees(userId),
+    accountCurrencies(userId),
+    getEntitlements(userId),
   ]);
 
   const budgets = budgetRows.map((row): BudgetStatus => {
@@ -245,7 +251,7 @@ export async function getBudgetOverview(
       a.categoryName.localeCompare(b.categoryName),
   );
 
-  return { budgets, currencies: await accountCurrencies(userId) };
+  return { budgets, currencies, maxBudgets: entitlements.maxBudgets };
 }
 
 /** Currencies a new Budget can use: those of the user's accounts. */
@@ -267,6 +273,10 @@ export async function createBudget(
 ): Promise<CreateBudgetResult> {
   if (!(await ownedEntityExists("category", userId, input.categoryId))) {
     return { error: "Category not found", code: "category_not_found" };
+  }
+  const limitCheck = await checkBudgetLimit(userId);
+  if (!limitCheck.allowed) {
+    return { error: limitCheck.error, code: limitCheck.code, limit: limitCheck.limit };
   }
 
   // The (user, category, currency) unique index is the duplicate guard —

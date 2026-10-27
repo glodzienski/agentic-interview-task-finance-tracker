@@ -426,5 +426,7 @@
   "delete_budget_title": "Delete Budget",
   "delete_budget_confirm": "Remove the {name} ({currency}) budget? Your transactions are not affected.",
   "budget_not_found": "This budget no longer exists.",
-  "budget_delete_failed": "Could not delete the budget. Please try again."
+  "budget_delete_failed": "Could not delete the budget. Please try again.",
+  "budget_free_plan_limit": "Free plan: {limit} budgets — Upgrade to Pro",
+  "budget_limit_reached": "The free plan is limited to {limit} budgets. Upgrade to Pro for unlimited budgets."
 }

@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { db, schema } from "../src/db/index.ts";
 import { hardDeleteUser } from "../src/server/compliance.server.ts";
+import { env } from "../src/server/env.ts";
 import {
   createBudget,
   deleteBudget,
@@ -83,6 +84,16 @@ async function budgetFor(categoryId: string, limitMinor: number, currency = "PLN
   if ("error" in result) throw new Error(result.error);
   return result.data.id;
 }
+
+/** Mirror a subscription row as a verified webhook would. */
+const setPlan = (plan: "free" | "pro", status = "active") =>
+  db
+    .insert(schema.subscriptions)
+    .values({ user_id: userId, plan, status })
+    .onConflictDoUpdate({
+      target: schema.subscriptions.user_id,
+      set: { plan, status },
+    });
 
 async function statusOf(budgetId: string, month = "2026-10") {
   const { budgets } = await getBudgetOverview(userId, month);
@@ -224,6 +235,8 @@ describe("budget overview: over budget", () => {
   });
 
   it("lists over-budget Budgets first, then by percentage used", async () => {
+    // Four Budgets is above the free plan's limit.
+    await setPlan("pro");
     for (const name of ["low", "high", "over-small", "over-big"]) {
       await insertCategory(name);
     }
@@ -458,5 +471,98 @@ describe("budget overview: receipt items (ADR-0001)", () => {
     await insertReceipt(lastMonth, [[5000, "household"]]);
 
     expect((await statusOf(household)).spentMinor).toBe(0);
+  });
+});
+
+describe("free plan budget limit", () => {
+  const freeMax = env.billing.freeMaxBudgets;
+
+  /** Create Budgets up to the free limit, one per category. */
+  async function fillFreeSlots() {
+    const ids: string[] = [];
+    for (let i = 0; i < freeMax; i++) {
+      await insertCategory(`limit-cat-${i}`);
+      ids.push(await budgetFor(`limit-cat-${i}`, 10000));
+    }
+    return ids;
+  }
+
+  it("reports the free limit in the overview, unlimited on Pro", async () => {
+    expect((await getBudgetOverview(userId, "2026-10")).maxBudgets).toBe(freeMax);
+    await setPlan("pro");
+    expect((await getBudgetOverview(userId, "2026-10")).maxBudgets).toBeNull();
+  });
+
+  it("blocks the Budget after the free limit with the limit echoed", async () => {
+    await fillFreeSlots();
+    await insertCategory("one-too-many");
+
+    const result = await createBudget(userId, {
+      categoryId: "one-too-many",
+      currency: "PLN",
+      limitMinor: 10000,
+    });
+    expect(result).toMatchObject({ code: "budget_limit_reached", limit: freeMax });
+    expect((await getBudgetOverview(userId, "2026-10")).budgets).toHaveLength(freeMax);
+  });
+
+  it("counts another user's Budgets against nobody but them", async () => {
+    await insertCategory("theirs", null, otherUserId);
+    for (const currency of ["PLN", "EUR", "USD"]) {
+      await createBudget(otherUserId, { categoryId: "theirs", currency, limitMinor: 1 });
+    }
+    await insertCategory("mine");
+
+    expect(await createBudget(userId, {
+      categoryId: "mine",
+      currency: "PLN",
+      limitMinor: 10000,
+    })).toMatchObject({ success: true });
+  });
+
+  it("lets Pro users create more than the free limit", async () => {
+    await setPlan("pro");
+    await fillFreeSlots();
+    await insertCategory("extra");
+
+    expect(await createBudget(userId, {
+      categoryId: "extra",
+      currency: "PLN",
+      limitMinor: 10000,
+    })).toMatchObject({ success: true });
+  });
+
+  it("keeps every Budget working after a downgrade; only creating is blocked", async () => {
+    await setPlan("pro");
+    const ids = await fillFreeSlots();
+    await insertCategory("extra");
+    const extra = await budgetFor("extra", 10000);
+    await setPlan("pro", "canceled");
+
+    await insertTransaction("pln-acc", "extra", -12000, "2026-10-10");
+    expect(await statusOf(extra)).toMatchObject({ spentMinor: 12000, isOverBudget: true });
+    expect(await updateBudgetLimit(userId, extra, 20000)).toEqual({ success: true });
+    expect((await statusOf(extra)).isOverBudget).toBe(false);
+
+    await insertCategory("another");
+    expect(await createBudget(userId, {
+      categoryId: "another",
+      currency: "PLN",
+      limitMinor: 10000,
+    })).toMatchObject({ code: "budget_limit_reached" });
+
+    // Deleting one leaves them at the limit: still blocked until under it.
+    expect(await deleteBudget(userId, ids[0])).toEqual({ success: true });
+    expect(await createBudget(userId, {
+      categoryId: "another",
+      currency: "PLN",
+      limitMinor: 10000,
+    })).toMatchObject({ code: "budget_limit_reached" });
+    expect(await deleteBudget(userId, extra)).toEqual({ success: true });
+    expect(await createBudget(userId, {
+      categoryId: "another",
+      currency: "PLN",
+      limitMinor: 10000,
+    })).toMatchObject({ success: true });
   });
 });
