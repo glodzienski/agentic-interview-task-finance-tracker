@@ -3,8 +3,9 @@ import { useServerFn } from "@tanstack/react-start";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect } from "react";
 import { m } from "#/paraglide/messages";
-import { formatMoney, parseAmountToMinor } from "#/lib/money";
+import { formatMinor, formatMoney, parseAmountToMinor } from "#/lib/money";
 import { useHydrated } from "#/lib/use-hydrated";
+import { EditButton, DeleteButton } from "#/components/ui/action-buttons";
 import { Badge } from "#/components/ui/badge";
 import { Button } from "#/components/ui/button";
 import { Input } from "#/components/ui/input";
@@ -17,12 +18,23 @@ import {
   DialogHeader,
   DialogTitle,
 } from "#/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "#/components/ui/alert-dialog";
 import { getCategories } from "#/server/categories.functions";
 import {
   getBudgetOverview,
   createBudget,
+  updateBudgetLimit,
+  deleteBudget,
 } from "#/server/budgets.functions";
-
 
 type BudgetOverview = Awaited<ReturnType<typeof getBudgetOverview>>;
 type BudgetStatus = BudgetOverview["budgets"][number];
@@ -78,14 +90,19 @@ function flattenCategoryTree(
 
 // --- Budget Card ---
 
-function BudgetCard({ budget }: { budget: BudgetStatus }) {
+function BudgetCard({
+  budget,
+  onEdit,
+  onDelete,
+}: {
+  budget: BudgetStatus;
+  onEdit: (budget: BudgetStatus) => void;
+  onDelete: (budget: BudgetStatus) => void;
+}) {
   const barWidth = Math.min(100, budget.percentUsed);
 
   return (
-    <div
-      className="island-shell rounded-xl p-4 space-y-3"
-      data-testid="budget-card"
-    >
+    <div className="island-shell rounded-xl p-4 space-y-3" data-testid="budget-card">
       <div className="flex items-center gap-3">
         <span
           className="size-3 shrink-0 rounded-full border border-border/50"
@@ -94,9 +111,7 @@ function BudgetCard({ budget }: { budget: BudgetStatus }) {
         />
         <h2 className="flex-1 text-sm font-semibold truncate">
           {budget.categoryName}
-          <span className="ml-2 text-xs font-normal text-muted-foreground">
-            {budget.currency}
-          </span>
+          <span className="ml-2 text-xs font-normal text-muted-foreground">{budget.currency}</span>
         </h2>
         {budget.isOverBudget && (
           <Badge variant="destructive">
@@ -116,6 +131,10 @@ function BudgetCard({ budget }: { budget: BudgetStatus }) {
             {m.budget_over_badge()}
           </Badge>
         )}
+        <div className="flex items-center gap-1">
+          <EditButton onClick={() => onEdit(budget)} data-testid="edit-budget" />
+          <DeleteButton onClick={() => onDelete(budget)} data-testid="delete-budget" />
+        </div>
       </div>
 
       <div
@@ -127,9 +146,7 @@ function BudgetCard({ budget }: { budget: BudgetStatus }) {
         className="h-2 w-full rounded-full bg-muted overflow-hidden"
       >
         <div
-          className={
-            budget.isOverBudget ? "h-full bg-destructive" : "h-full bg-primary"
-          }
+          className={budget.isOverBudget ? "h-full bg-destructive" : "h-full bg-primary"}
           style={{ width: `${barWidth}%` }}
         />
       </div>
@@ -143,11 +160,7 @@ function BudgetCard({ budget }: { budget: BudgetStatus }) {
         </span>
         <span
           data-testid="budget-remaining"
-          className={
-            budget.isOverBudget
-              ? "font-medium text-destructive"
-              : "text-muted-foreground"
-          }
+          className={budget.isOverBudget ? "font-medium text-destructive" : "text-muted-foreground"}
         >
           {budget.isOverBudget
             ? m.budget_over({
@@ -172,6 +185,7 @@ interface BudgetFormData {
 
 function BudgetForm({
   isOpen,
+  editingBudget,
   categories,
   currencies,
   onClose,
@@ -179,6 +193,8 @@ function BudgetForm({
   error,
 }: {
   isOpen: boolean;
+  /** Set when editing: only the limit can change. */
+  editingBudget: BudgetStatus | null;
   categories: CategoryRow[];
   currencies: string[];
   onClose: () => void;
@@ -193,13 +209,13 @@ function BudgetForm({
 
   useEffect(() => {
     if (isOpen) {
-      setCategoryId("");
-      setCurrency(currencies[0] ?? "");
-      setLimit("");
+      setCategoryId(editingBudget?.categoryId ?? "");
+      setCurrency(editingBudget?.currency ?? currencies[0] ?? "");
+      setLimit(editingBudget ? formatMinor(editingBudget.limitMinor) : "");
       setValidationError(null);
       setSubmitting(false);
     }
-  }, [isOpen, currencies]);
+  }, [isOpen, editingBudget, currencies]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -228,44 +244,63 @@ function BudgetForm({
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{m.new_budget_title()}</DialogTitle>
+          <DialogTitle>{editingBudget ? m.edit_budget_title() : m.new_budget_title()}</DialogTitle>
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-4" noValidate>
-          <div>
-            <Label htmlFor="budget-category" className="mb-1">
-              {m.category_label()}
-            </Label>
-            <Select
-              id="budget-category"
-              value={categoryId}
-              onChange={(e) => setCategoryId(e.target.value)}
-            >
-              <SelectItem value="">{m.budget_category_required()}</SelectItem>
-              {options.map(({ category, depth }) => (
-                <SelectItem key={category.id} value={category.id}>
-                  {"—".repeat(depth)} {category.name}
-                </SelectItem>
-              ))}
-            </Select>
-          </div>
+          {editingBudget ? (
+            <>
+              <div>
+                <Label htmlFor="budget-category" className="mb-1">
+                  {m.category_label()}
+                </Label>
+                <Input id="budget-category" value={editingBudget.categoryName} readOnly disabled />
+              </div>
+              <div>
+                <Label htmlFor="budget-currency" className="mb-1">
+                  {m.currency_label()}
+                </Label>
+                <Input id="budget-currency" value={editingBudget.currency} readOnly disabled />
+              </div>
+            </>
+          ) : (
+            <>
+              <div>
+                <Label htmlFor="budget-category" className="mb-1">
+                  {m.category_label()}
+                </Label>
+                <Select
+                  id="budget-category"
+                  value={categoryId}
+                  onChange={(e) => setCategoryId(e.target.value)}
+                >
+                  <SelectItem value="">{m.budget_category_required()}</SelectItem>
+                  {options.map(({ category, depth }) => (
+                    <SelectItem key={category.id} value={category.id}>
+                      {"—".repeat(depth)} {category.name}
+                    </SelectItem>
+                  ))}
+                </Select>
+              </div>
 
-          <div>
-            <Label htmlFor="budget-currency" className="mb-1">
-              {m.currency_label()}
-            </Label>
-            <Select
-              id="budget-currency"
-              value={currency}
-              onChange={(e) => setCurrency(e.target.value)}
-            >
-              {currencies.map((code) => (
-                <SelectItem key={code} value={code}>
-                  {code}
-                </SelectItem>
-              ))}
-            </Select>
-          </div>
+              <div>
+                <Label htmlFor="budget-currency" className="mb-1">
+                  {m.currency_label()}
+                </Label>
+                <Select
+                  id="budget-currency"
+                  value={currency}
+                  onChange={(e) => setCurrency(e.target.value)}
+                >
+                  {currencies.map((code) => (
+                    <SelectItem key={code} value={code}>
+                      {code}
+                    </SelectItem>
+                  ))}
+                </Select>
+              </div>
+            </>
+          )}
 
           <div>
             <Label htmlFor="budget-limit" className="mb-1">
@@ -288,21 +323,72 @@ function BudgetForm({
           )}
 
           <DialogFooter className="pt-2">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={onClose}
-              disabled={submitting}
-            >
+            <Button type="button" variant="outline" onClick={onClose} disabled={submitting}>
               {m.cancel()}
             </Button>
             <Button type="submit" disabled={submitting}>
-              {submitting ? m.creating() : m.create_budget_btn()}
+              {editingBudget
+                ? submitting
+                  ? m.saving()
+                  : m.save_changes()
+                : submitting
+                  ? m.creating()
+                  : m.create_budget_btn()}
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// --- Delete Confirmation ---
+
+function DeleteBudgetConfirm({
+  budget,
+  error,
+  onConfirm,
+  onCancel,
+}: {
+  budget: BudgetStatus | null;
+  error: string | null;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <AlertDialog open={!!budget} onOpenChange={(open) => !open && onCancel()}>
+      <AlertDialogContent className="sm:max-w-sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>{m.delete_budget_title()}</AlertDialogTitle>
+          <AlertDialogDescription>
+            {budget &&
+              m.delete_budget_confirm({
+                name: budget.categoryName,
+                currency: budget.currency,
+              })}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {error && (
+          <div className="text-destructive text-sm p-3 rounded-md bg-destructive/10" role="alert">
+            {error}
+          </div>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel onClick={onCancel}>{m.cancel()}</AlertDialogCancel>
+          <AlertDialogAction
+            variant="destructive"
+            onClick={(e) => {
+              // Radix closes on click; stay open until the delete settles so
+              // a failure can be shown here.
+              e.preventDefault();
+              onConfirm();
+            }}
+          >
+            {m.delete()}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 
@@ -317,6 +403,8 @@ function BudgetsPage() {
   const queryClient = useQueryClient();
   const getBudgetOverviewFn = useServerFn(getBudgetOverview);
   const createBudgetFn = useServerFn(createBudget);
+  const updateBudgetLimitFn = useServerFn(updateBudgetLimit);
+  const deleteBudgetFn = useServerFn(deleteBudget);
   const getCategoriesFn = useServerFn(getCategories);
 
   const { data: overview, isLoading } = useQuery({
@@ -339,29 +427,86 @@ function BudgetsPage() {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: (data: { id: string; limitMinor: number }) => updateBudgetLimitFn({ data }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (data: { id: string }) => deleteBudgetFn({ data }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
+    },
+  });
+
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const [editingBudget, setEditingBudget] = useState<BudgetStatus | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [deleteTarget, setDeleteTarget] = useState<BudgetStatus | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const handleAdd = () => {
+    setEditingBudget(null);
     setFormError(null);
     setIsFormOpen(true);
+  };
+
+  const handleEdit = (budget: BudgetStatus) => {
+    setEditingBudget(budget);
+    setFormError(null);
+    setIsFormOpen(true);
+  };
+
+  const closeForm = () => {
+    setIsFormOpen(false);
+    setEditingBudget(null);
+    setFormError(null);
   };
 
   const handleFormSubmit = async (data: BudgetFormData) => {
     setFormError(null);
     try {
-      const result = await createMutation.mutateAsync(data);
-      if ("error" in result) {
-        setFormError(
-          result.code === "budget_duplicate"
-            ? m.budget_duplicate()
-            : m.budget_category_not_found(),
-        );
-        return;
+      if (editingBudget) {
+        const result = await updateMutation.mutateAsync({
+          id: editingBudget.id,
+          limitMinor: data.limitMinor,
+        });
+        if ("error" in result) {
+          // Deleted elsewhere: say so, and drop the stale card from the list.
+          setFormError(m.budget_not_found());
+          queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
+          return;
+        }
+      } else {
+        const result = await createMutation.mutateAsync(data);
+        if ("error" in result) {
+          setFormError(
+            result.code === "budget_duplicate"
+              ? m.budget_duplicate()
+              : m.budget_category_not_found(),
+          );
+          return;
+        }
       }
-      setIsFormOpen(false);
+      closeForm();
     } catch {
       setFormError(m.budget_save_failed());
+    }
+  };
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteTarget) return;
+    setDeleteError(null);
+    try {
+      // A not-found result means it's already gone (e.g. deleted in another
+      // tab); onSuccess refetches either way, so both outcomes just close.
+      await deleteMutation.mutateAsync({ id: deleteTarget.id });
+      setDeleteTarget(null);
+    } catch {
+      setDeleteError(m.budget_delete_failed());
     }
   };
 
@@ -372,9 +517,7 @@ function BudgetsPage() {
       <header className="border-b border-line/50 bg-header-bg/80 backdrop-blur-sm">
         <div className="page-wrap py-4 flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold display-title">
-              {m.budgets_title()}
-            </h1>
+            <h1 className="text-xl font-bold display-title">{m.budgets_title()}</h1>
             {month && (
               <p className="text-sm text-muted-foreground mt-0.5">
                 {m.budgets_subtitle({ month: formatMonthLabel(month) })}
@@ -390,11 +533,7 @@ function BudgetsPage() {
               strokeWidth={2}
               aria-hidden="true"
             >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M12 4v16m8-8H4"
-              />
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
             </svg>
             {m.add_budget()}
           </Button>
@@ -406,19 +545,13 @@ function BudgetsPage() {
           <div className="flex items-center justify-center py-16">
             <div className="flex flex-col items-center gap-3">
               <div className="size-6 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-              <span className="text-sm text-muted-foreground">
-                {m.loading()}
-              </span>
+              <span className="text-sm text-muted-foreground">{m.loading()}</span>
             </div>
           </div>
         ) : budgets.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
-            <h2 className="text-base font-medium mb-1">
-              {m.no_budgets_yet()}
-            </h2>
-            <p className="text-sm text-muted-foreground mb-4 max-w-sm">
-              {m.create_first_budget()}
-            </p>
+            <h2 className="text-base font-medium mb-1">{m.no_budgets_yet()}</h2>
+            <p className="text-sm text-muted-foreground mb-4 max-w-sm">{m.create_first_budget()}</p>
             <Button variant="outline" onClick={handleAdd}>
               {m.add_budget()}
             </Button>
@@ -426,7 +559,15 @@ function BudgetsPage() {
         ) : (
           <div className="grid gap-4 sm:grid-cols-2">
             {budgets.map((budget) => (
-              <BudgetCard key={budget.id} budget={budget} />
+              <BudgetCard
+                key={budget.id}
+                budget={budget}
+                onEdit={handleEdit}
+                onDelete={(target) => {
+                  setDeleteError(null);
+                  setDeleteTarget(target);
+                }}
+              />
             ))}
           </div>
         )}
@@ -434,14 +575,22 @@ function BudgetsPage() {
 
       <BudgetForm
         isOpen={isFormOpen}
+        editingBudget={editingBudget}
         categories={categories}
         currencies={overview?.currencies ?? []}
-        onClose={() => {
-          setIsFormOpen(false);
-          setFormError(null);
-        }}
+        onClose={closeForm}
         onSubmit={handleFormSubmit}
         error={formError}
+      />
+
+      <DeleteBudgetConfirm
+        budget={deleteTarget}
+        error={deleteError}
+        onConfirm={handleDeleteConfirm}
+        onCancel={() => {
+          setDeleteTarget(null);
+          setDeleteError(null);
+        }}
       />
     </div>
   );

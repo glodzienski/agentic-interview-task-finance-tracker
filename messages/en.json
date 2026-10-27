@@ -421,5 +421,10 @@
   "budget_left": "{amount} left",
   "budget_over": "{amount} over",
   "budget_over_badge": "Over budget",
-  "budget_progress_label": "{name} budget used"
+  "budget_progress_label": "{name} budget used",
+  "edit_budget_title": "Edit Budget",
+  "delete_budget_title": "Delete Budget",
+  "delete_budget_confirm": "Remove the {name} ({currency}) budget? Your transactions are not affected.",
+  "budget_not_found": "This budget no longer exists.",
+  "budget_delete_failed": "Could not delete the budget. Please try again."
 }

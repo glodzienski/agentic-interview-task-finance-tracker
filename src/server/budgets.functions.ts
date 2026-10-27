@@ -3,7 +3,9 @@ import { z } from "zod";
 import { requireUserId } from "#/server/session";
 import {
   createBudget as createBudgetForUser,
+  deleteBudget as deleteBudgetForUser,
   getBudgetOverview as getBudgetOverviewForUser,
+  updateBudgetLimit as updateBudgetLimitForUser,
 } from "#/server/budgets.server";
 
 
@@ -15,13 +17,24 @@ const getBudgetOverviewSchema = z.object({
   month: z.string().regex(monthRegex, "Month must be YYYY-MM"),
 });
 
+// Integer minor units; the column is a 32-bit integer.
+const limitMinorSchema = z.number().int().positive().max(2_147_483_647);
+
 const createBudgetSchema = z.object({
   categoryId: z.string().min(1),
   currency: z
     .string()
     .regex(currencyRegex, "Currency must be a 3-letter ISO code (e.g. PLN, USD)"),
-  // Integer minor units; the column is a 32-bit integer.
-  limitMinor: z.number().int().positive().max(2_147_483_647),
+  limitMinor: limitMinorSchema,
+});
+
+const updateBudgetLimitSchema = z.object({
+  id: z.string().min(1),
+  limitMinor: limitMinorSchema,
+});
+
+const deleteBudgetSchema = z.object({
+  id: z.string().min(1),
 });
 
 export const getBudgetOverview = createServerFn({ method: "GET" })
@@ -36,4 +49,18 @@ export const createBudget = createServerFn({ method: "POST" })
   .handler(async ({ data }) => {
     const userId = await requireUserId();
     return createBudgetForUser(userId, data);
+  });
+
+export const updateBudgetLimit = createServerFn({ method: "POST" })
+  .inputValidator(updateBudgetLimitSchema)
+  .handler(async ({ data }) => {
+    const userId = await requireUserId();
+    return updateBudgetLimitForUser(userId, data.id, data.limitMinor);
+  });
+
+export const deleteBudget = createServerFn({ method: "POST" })
+  .inputValidator(deleteBudgetSchema)
+  .handler(async ({ data }) => {
+    const userId = await requireUserId();
+    return deleteBudgetForUser(userId, data.id);
   });

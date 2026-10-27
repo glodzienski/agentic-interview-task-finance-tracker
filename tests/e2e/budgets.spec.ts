@@ -168,6 +168,160 @@ test.describe("Budgets", () => {
     );
   });
 
+  test("edits only the limit, moving into and out of over budget", async ({
+    page,
+  }) => {
+    await addBudget(page, "Transport", "200");
+    await addTransaction(page, {
+      description: "Train pass",
+      amount: "150",
+      category: "Transport",
+    });
+    await page.goto("/budgets");
+    const card = budgetCard(page, "Transport");
+    await expect(card.getByTestId("budget-remaining")).toHaveText(
+      "50.00 PLN left",
+    );
+
+    await card.getByRole("button", { name: "Edit" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Budget" });
+    await expect(dialog.getByLabel("Category")).toHaveValue("Transport");
+    await expect(dialog.getByLabel("Category")).toBeDisabled();
+    await expect(dialog.getByLabel("Currency")).toHaveValue("PLN");
+    await expect(dialog.getByLabel("Currency")).toBeDisabled();
+    await expect(dialog.getByLabel("Monthly limit")).toHaveValue("200.00");
+
+    await dialog.getByLabel("Monthly limit").fill("100");
+    await dialog.getByRole("button", { name: "Save Changes" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(card.getByText("Over budget")).toBeVisible();
+    await expect(card.getByTestId("budget-remaining")).toHaveText(
+      "50.00 PLN over",
+    );
+
+    await card.getByRole("button", { name: "Edit" }).click();
+    await dialog.getByLabel("Monthly limit").fill("400,50");
+    await dialog.getByRole("button", { name: "Save Changes" }).click();
+    await expect(dialog).toBeHidden();
+    await expect(card.getByText("Over budget")).toBeHidden();
+    await expect(card.getByTestId("budget-spent")).toHaveText(
+      "150.00 PLN of 400.50 PLN",
+    );
+  });
+
+  test("rejects an invalid limit when editing", async ({ page }) => {
+    await addBudget(page, "Housing", "900");
+
+    await budgetCard(page, "Housing").getByRole("button", { name: "Edit" }).click();
+    const dialog = page.getByRole("dialog", { name: "Edit Budget" });
+    await dialog.getByLabel("Monthly limit").fill("0");
+    await dialog.getByRole("button", { name: "Save Changes" }).click();
+
+    await expect(dialog.getByRole("alert")).toHaveText(
+      "Enter a limit greater than 0",
+    );
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(
+      budgetCard(page, "Housing").getByTestId("budget-spent"),
+    ).toHaveText("0.00 PLN of 900.00 PLN");
+  });
+
+  test("removes a Budget only after confirming", async ({ page }) => {
+    await addBudget(page, "Health", "300");
+    const card = budgetCard(page, "Health");
+
+    await card.getByRole("button", { name: "Delete" }).click();
+    const confirm = page.getByRole("alertdialog", { name: "Delete Budget" });
+    await expect(confirm).toContainText("Remove the Health (PLN) budget?");
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(confirm).toBeHidden();
+    await expect(card).toBeVisible();
+
+    await card.getByRole("button", { name: "Delete" }).click();
+    await confirm.getByRole("button", { name: "Delete" }).click();
+    await expect(confirm).toBeHidden();
+    await expect(card).toBeHidden();
+    await expect(page.getByText("No budgets yet")).toBeVisible();
+  });
+
+  test("editing a Budget deleted in another tab says it no longer exists", async ({
+    page,
+    context,
+  }) => {
+    await addBudget(page, "Housing", "800");
+    await budgetCard(page, "Housing")
+      .getByRole("button", { name: "Edit" })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "Edit Budget" });
+
+    const otherTab = await context.newPage();
+    await otherTab.goto("/budgets");
+    await budgetCard(otherTab, "Housing")
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await otherTab
+      .getByRole("alertdialog", { name: "Delete Budget" })
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await expect(otherTab.getByText("No budgets yet")).toBeVisible();
+
+    await dialog.getByLabel("Monthly limit").fill("900");
+    await dialog.getByRole("button", { name: "Save Changes" }).click();
+    await expect(dialog.getByRole("alert")).toHaveText(
+      "This budget no longer exists.",
+    );
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(page.getByText("No budgets yet")).toBeVisible();
+  });
+
+  test("deleting a Budget already deleted in another tab just clears it", async ({
+    page,
+    context,
+  }) => {
+    await addBudget(page, "Health", "250");
+
+    const otherTab = await context.newPage();
+    await otherTab.goto("/budgets");
+    await budgetCard(otherTab, "Health")
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await otherTab
+      .getByRole("alertdialog", { name: "Delete Budget" })
+      .getByRole("button", { name: "Delete" })
+      .click();
+    await expect(otherTab.getByText("No budgets yet")).toBeVisible();
+
+    await budgetCard(page, "Health")
+      .getByRole("button", { name: "Delete" })
+      .click();
+    const confirm = page.getByRole("alertdialog", { name: "Delete Budget" });
+    await confirm.getByRole("button", { name: "Delete" }).click();
+    await expect(confirm).toBeHidden();
+    await expect(page.getByText("No budgets yet")).toBeVisible();
+  });
+
+  test("keeps the Budget and shows an error when deleting fails", async ({
+    page,
+  }) => {
+    await addBudget(page, "Transport", "120");
+    const card = budgetCard(page, "Transport");
+    await card.getByRole("button", { name: "Delete" }).click();
+    const confirm = page.getByRole("alertdialog", { name: "Delete Budget" });
+
+    // Fail the delete server-function call (the only POST from here on).
+    await page.route("**/_serverFn/**", (route) =>
+      route.request().method() === "POST" ? route.abort() : route.continue(),
+    );
+    await confirm.getByRole("button", { name: "Delete" }).click();
+
+    await expect(confirm.getByRole("alert")).toHaveText(
+      "Could not delete the budget. Please try again.",
+    );
+    await page.unroute("**/_serverFn/**");
+    await confirm.getByRole("button", { name: "Cancel" }).click();
+    await expect(card).toBeVisible();
+  });
+
   test("deleting a budgeted category still works and removes its Budget", async ({
     page,
   }) => {

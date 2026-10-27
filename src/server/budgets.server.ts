@@ -226,3 +226,45 @@ export async function createBudget(
   }
   return { success: true, data: { id: inserted[0].id } };
 }
+
+export type BudgetMutationResult =
+  | { success: true }
+  | { error: string; code: "budget_not_found" };
+
+/** Ownership in the same query: another user's Budget reads as not found. */
+function ownedBudget(userId: string, budgetId: string) {
+  return and(
+    eq(schema.budgets.id, budgetId),
+    eq(schema.budgets.user_id, userId),
+  );
+}
+
+const BUDGET_NOT_FOUND = {
+  error: "Budget not found",
+  code: "budget_not_found",
+} as const;
+
+/** Change a Budget's limit. Category and currency are fixed at creation. */
+export async function updateBudgetLimit(
+  userId: string,
+  budgetId: string,
+  limitMinor: number,
+): Promise<BudgetMutationResult> {
+  const updated = await db
+    .update(schema.budgets)
+    .set({ limit_minor: limitMinor })
+    .where(ownedBudget(userId, budgetId))
+    .returning({ id: schema.budgets.id });
+  return updated.length > 0 ? { success: true } : BUDGET_NOT_FOUND;
+}
+
+export async function deleteBudget(
+  userId: string,
+  budgetId: string,
+): Promise<BudgetMutationResult> {
+  const deleted = await db
+    .delete(schema.budgets)
+    .where(ownedBudget(userId, budgetId))
+    .returning({ id: schema.budgets.id });
+  return deleted.length > 0 ? { success: true } : BUDGET_NOT_FOUND;
+}

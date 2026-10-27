@@ -7,7 +7,9 @@ import { db, schema } from "../src/db/index.ts";
 import { hardDeleteUser } from "../src/server/compliance.server.ts";
 import {
   createBudget,
+  deleteBudget,
   getBudgetOverview,
+  updateBudgetLimit,
 } from "../src/server/budgets.server.ts";
 
 const userId = "budgets-test-user";
@@ -272,5 +274,78 @@ describe("budget overview: currencies", () => {
   it("falls back to PLN when the user has no accounts", async () => {
     const { currencies } = await getBudgetOverview(otherUserId, "2026-10");
     expect(currencies).toEqual(["PLN"]);
+  });
+});
+
+describe("editing a Budget's limit", () => {
+  it("changes only the limit, recomputing what's left", async () => {
+    await insertCategory("groceries");
+    const id = await budgetFor("groceries", 50000);
+    await insertTransaction("pln-acc", "groceries", -40000, "2026-10-10");
+
+    expect(await updateBudgetLimit(userId, id, 30000)).toEqual({ success: true });
+    expect(await statusOf(id)).toMatchObject({
+      categoryId: "groceries",
+      currency: "PLN",
+      limitMinor: 30000,
+      isOverBudget: true,
+      overMinor: 10000,
+    });
+
+    await updateBudgetLimit(userId, id, 60000);
+    expect(await statusOf(id)).toMatchObject({
+      isOverBudget: false,
+      remainingMinor: 20000,
+    });
+  });
+
+  it("treats another user's Budget as not found", async () => {
+    await insertCategory("other-groceries", null, otherUserId);
+    const theirs = await createBudget(otherUserId, {
+      categoryId: "other-groceries",
+      currency: "PLN",
+      limitMinor: 1000,
+    });
+    if ("error" in theirs) throw new Error(theirs.error);
+
+    expect(await updateBudgetLimit(userId, theirs.data.id, 1)).toMatchObject({
+      code: "budget_not_found",
+    });
+    const { budgets } = await getBudgetOverview(otherUserId, "2026-10");
+    expect(budgets[0].limitMinor).toBe(1000);
+  });
+
+  it("reports a missing Budget as not found", async () => {
+    expect(await updateBudgetLimit(userId, "no-such-budget", 1000)).toMatchObject({
+      code: "budget_not_found",
+    });
+  });
+});
+
+describe("removing a Budget", () => {
+  it("removes it from the overview", async () => {
+    await insertCategory("groceries");
+    const id = await budgetFor("groceries", 50000);
+
+    expect(await deleteBudget(userId, id)).toEqual({ success: true });
+    expect((await getBudgetOverview(userId, "2026-10")).budgets).toHaveLength(0);
+  });
+
+  it("treats another user's Budget or a missing one as not found", async () => {
+    await insertCategory("other-groceries", null, otherUserId);
+    const theirs = await createBudget(otherUserId, {
+      categoryId: "other-groceries",
+      currency: "PLN",
+      limitMinor: 1000,
+    });
+    if ("error" in theirs) throw new Error(theirs.error);
+
+    expect(await deleteBudget(userId, theirs.data.id)).toMatchObject({
+      code: "budget_not_found",
+    });
+    expect(await deleteBudget(userId, "no-such-budget")).toMatchObject({
+      code: "budget_not_found",
+    });
+    expect((await getBudgetOverview(otherUserId, "2026-10")).budgets).toHaveLength(1);
   });
 });
