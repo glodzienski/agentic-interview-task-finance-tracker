@@ -428,5 +428,8 @@
   "budget_not_found": "This budget no longer exists.",
   "budget_delete_failed": "Could not delete the budget. Please try again.",
   "budget_free_plan_limit": "Free plan: {limit} budgets — Upgrade to Pro",
-  "budget_limit_reached": "The free plan is limited to {limit} budgets. Upgrade to Pro for unlimited budgets."
+  "budget_limit_reached": "The free plan is limited to {limit} budgets. Upgrade to Pro for unlimited budgets.",
+  "budget_alerts_verify_hint": "Over-budget alert emails are only sent to a verified email address. Verify your email to receive them.",
+  "email_budget_alert_subject": "Over budget: {category} — Finance Tracker",
+  "email_budget_alert_body": "Your {category} budget is over budget for {month}.\n\nSpent: {spent}\nLimit: {limit}\n\nSee your budgets:\n\n{link}\n\nYou'll get at most one alert per budget each month."
 }

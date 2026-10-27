@@ -274,6 +274,30 @@ export const budgets = pgTable(
   ],
 );
 
+// One row per Over-budget alert sent (see CONTEXT.md). The (budget, month)
+// unique index is the deduplication and concurrency guard: an evaluation
+// claims the row before sending and deletes it again if sending fails.
+// Alert history goes with its Budget via ON DELETE CASCADE, so a claim made
+// concurrently with a Budget or category deletion can't block it.
+export const budget_alerts = pgTable(
+  "budget_alerts",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    budget_id: text("budget_id")
+      .notNull()
+      .references(() => budgets.id, { onDelete: "cascade" }),
+    // Budget month, `YYYY-MM`.
+    month: text("month").notNull(),
+    sent_at: timestamp("sent_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [uniqueIndex("budget_alerts_budget_month_idx").on(t.budget_id, t.month)],
+);
+
 // Local mirror of Stripe subscription state, one row per user (no row =
 // free plan). Written exclusively by the verified Stripe webhook handler and
 // the TEST_MODE plan-override route — never by user-facing server functions.

@@ -106,6 +106,10 @@ export async function collectUserExport(userId: string) {
     .select()
     .from(schema.budgets)
     .where(eq(schema.budgets.user_id, userId));
+  const budgetAlerts = await db
+    .select()
+    .from(schema.budget_alerts)
+    .where(eq(schema.budget_alerts.user_id, userId));
   const [subscription] = await db
     .select({
       plan: schema.subscriptions.plan,
@@ -127,6 +131,7 @@ export async function collectUserExport(userId: string) {
     receiptItems,
     aiUsage,
     budgets,
+    budgetAlerts,
     subscription: subscription ?? null,
   };
 }
@@ -163,6 +168,7 @@ export async function buildExportZip(userId: string): Promise<Uint8Array> {
         })),
         aiUsage: data.aiUsage,
         budgets: data.budgets,
+        budgetAlerts: data.budgetAlerts,
         subscription: data.subscription,
       },
       null,
@@ -244,6 +250,22 @@ export async function buildExportZip(userId: string): Promise<Uint8Array> {
         b.limit_minor,
         b.created_at.toISOString(),
       ]),
+    ),
+  );
+  files["budget_alerts.csv"] = strToU8(
+    toCsv(
+      ["id", "budget_id", "category", "currency", "month", "sent_at"],
+      data.budgetAlerts.map((a) => {
+        const budget = data.budgets.find((b) => b.id === a.budget_id);
+        return [
+          a.id,
+          a.budget_id,
+          data.categories.find((c) => c.id === budget?.category_id)?.name,
+          budget?.currency,
+          a.month,
+          a.sent_at.toISOString(),
+        ];
+      }),
     ),
   );
   files["receipt_items.csv"] = strToU8(
@@ -347,6 +369,9 @@ export async function hardDeleteUser(userId: string): Promise<void> {
     await tx
       .delete(schema.subscriptions)
       .where(eq(schema.subscriptions.user_id, userId));
+    await tx
+      .delete(schema.budget_alerts)
+      .where(eq(schema.budget_alerts.user_id, userId));
     await tx.delete(schema.budgets).where(eq(schema.budgets.user_id, userId));
     await tx.delete(schema.accounts).where(eq(schema.accounts.user_id, userId));
     await tx

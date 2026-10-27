@@ -81,6 +81,12 @@ async function seedFullUser(userId: string) {
     currency: "PLN",
     limit_minor: 100000,
   });
+  await db.insert(schema.budget_alerts).values({
+    id: `${userId}-budget-alert`,
+    user_id: userId,
+    budget_id: `${userId}-budget`,
+    month: "2026-10",
+  });
   await db.insert(schema.ai_usage).values({
     id: `${userId}-usage`,
     user_id: userId,
@@ -134,6 +140,8 @@ describe("compliance: data export", () => {
     expect(json.subscription.plan).toBe("free");
     expect(json.budgets).toHaveLength(1);
     expect(json.budgets[0].limit_minor).toBe(100000);
+    expect(json.budgetAlerts).toHaveLength(1);
+    expect(json.budgetAlerts[0].month).toBe("2026-10");
 
     const txnCsv = strFromU8(files["transactions.csv"]);
     expect(txnCsv).toContain('"Grocery store"');
@@ -146,6 +154,9 @@ describe("compliance: data export", () => {
     const budgetsCsv = strFromU8(files["budgets.csv"]);
     expect(budgetsCsv).toContain('"Groceries"');
     expect(budgetsCsv).toContain('"1000.00"');
+    const alertsCsv = strFromU8(files["budget_alerts.csv"]);
+    expect(alertsCsv).toContain('"Groceries"');
+    expect(alertsCsv).toContain('"2026-10"');
 
     expect(Array.from(files[`receipts/${userId}-rcpt.jpg`])).toEqual([
       0xff, 0xd8, 0xff, 0x42,
@@ -173,6 +184,7 @@ describe("compliance: account hard delete", () => {
       db.select().from(schema.ai_usage).where(eq(schema.ai_usage.user_id, userId)),
       db.select().from(schema.subscriptions).where(eq(schema.subscriptions.user_id, userId)),
       db.select().from(schema.budgets).where(eq(schema.budgets.user_id, userId)),
+      db.select().from(schema.budget_alerts).where(eq(schema.budget_alerts.user_id, userId)),
     ]);
     for (const rows of remaining) {
       expect.soft(rows).toHaveLength(0);

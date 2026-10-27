@@ -558,6 +558,15 @@ function BudgetsPage() {
       </header>
 
       <main className="page-wrap py-8">
+        {overview && !overview.alertsEnabled && (
+          <p
+            role="note"
+            className="mb-6 rounded-lg border border-border bg-muted/40 px-4 py-3 text-sm text-muted-foreground"
+            data-testid="budget-alerts-hint"
+          >
+            {m.budget_alerts_verify_hint()}
+          </p>
+        )}
         {isLoading || !overview ? (
           <div className="flex items-center justify-center py-16">
             <div className="flex flex-col items-center gap-3">

@@ -5,6 +5,7 @@ import { db, schema } from "#/db";
 import { isEmailVerified, requireUserId } from "#/server/session";
 import { categorizeDescription, isAIVisible } from "#/server/ai";
 import { checkSpendCap } from "#/server/ai-usage.server";
+import { checkBudgetAlertsInBackground } from "#/server/budgets.server";
 import { formatMinor, parseAmountToMinor } from "#/lib/money";
 import {
   MAX_IMPORT_FILE_BYTES,
@@ -1109,6 +1110,8 @@ async function* streamConfirmImport(
       }
     }
   }
+
+  if (insertRows.length > 0) checkBudgetAlertsInBackground(userId);
 
   yield {
     type: "complete",
