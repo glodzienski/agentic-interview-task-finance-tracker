@@ -708,16 +708,21 @@ function formatTxDate(iso: string): string {
   const d = new Date(iso + "Z");
   if (isNaN(d.getTime())) return iso;
   const hasTime = iso.includes("T") && iso.slice(11) !== "00:00:00";
+  // Stored dates are calendar dates with no zone: parsed as UTC above, so
+  // they must be formatted in UTC too, or browsers west of UTC show the
+  // previous day.
   const datePart = d.toLocaleDateString("en", {
     month: "short",
     day: "numeric",
     year: "numeric",
+    timeZone: "UTC",
   });
   if (!hasTime) return datePart;
   const timePart = d.toLocaleTimeString("en", {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
+    timeZone: "UTC",
   });
   return `${datePart} ${timePart}`;
 }
