@@ -462,6 +462,8 @@ function ImportPage() {
       setSummary(finalSummary);
       setSubmitting(false);
       setStep("summary");
+      // Imported Spending changes Budget totals.
+      queryClient.invalidateQueries({ queryKey: ["budgets"] });
     } catch (err) {
       setSubmitting(false);
       if (err instanceof Error && err.message === "Import cancelled") {
@@ -497,6 +499,7 @@ function ImportPage() {
     setUndoBatchId(null);
     queryClient.invalidateQueries({ queryKey: IMPORT_HISTORY_QUERY_KEY });
     queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    queryClient.invalidateQueries({ queryKey: ["budgets"] });
   };
 
   const visibleSteps: Step[] =

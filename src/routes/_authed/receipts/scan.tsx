@@ -447,6 +447,7 @@ function ReceiptScanPage() {
       if (saveResult.success) {
         setSaved(true);
         queryClient.invalidateQueries({ queryKey: ["transactions"] });
+        queryClient.invalidateQueries({ queryKey: ["budgets"] });
       } else {
         setSavingError("Unknown error during save");
       }

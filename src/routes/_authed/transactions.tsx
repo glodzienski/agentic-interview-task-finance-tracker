@@ -41,6 +41,8 @@ import { getCategories } from "#/server/categories.functions";
 const TRANSACTIONS_QUERY_KEY = ["transactions"] as const;
 const ACCOUNTS_QUERY_KEY = ["accounts"] as const;
 const CATEGORIES_QUERY_KEY = ["categories"] as const;
+// Budget totals depend on Spending, so they're stale after any change here.
+const BUDGETS_QUERY_KEY = ["budgets"] as const;
 
 // --- Filter / Sort / Pagination State ---
 
@@ -1118,6 +1120,7 @@ function TransactionsPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: TRANSACTIONS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
       queryClient.refetchQueries({ queryKey: CATEGORIES_QUERY_KEY });
       setIsFormOpen(false);
       setEditingTransaction(null);
@@ -1143,6 +1146,7 @@ function TransactionsPage() {
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: TRANSACTIONS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
       queryClient.refetchQueries({ queryKey: CATEGORIES_QUERY_KEY });
       setIsFormOpen(false);
       setEditingTransaction(null);
@@ -1153,6 +1157,7 @@ function TransactionsPage() {
     mutationFn: (data: { id: string }) => deleteTransactionFn({ data }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: TRANSACTIONS_QUERY_KEY });
+      queryClient.invalidateQueries({ queryKey: BUDGETS_QUERY_KEY });
       queryClient.refetchQueries({ queryKey: CATEGORIES_QUERY_KEY });
       setDeleteConfirmId(null);
     },

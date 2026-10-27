@@ -9,7 +9,10 @@ import {
   doublePrecision,
   serial,
   index,
+  uniqueIndex,
+  check,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const auth_token_type = pgEnum("auth_token_type", [
   "verify_email",
@@ -237,6 +240,37 @@ export const ai_usage = pgTable(
     // Quota checks scan by user + month; the spend cap sums by day globally.
     index("ai_usage_user_created_idx").on(t.user_id, t.created_at),
     index("ai_usage_created_idx").on(t.created_at),
+  ],
+);
+
+// Monthly Spending limit for one category (and its descendants) in one
+// currency — see CONTEXT.md and ADR-0002. Only the current limit is stored;
+// there is no per-month limit history.
+export const budgets = pgTable(
+  "budgets",
+  {
+    id: text("id").primaryKey(),
+    user_id: text("user_id")
+      .notNull()
+      .references(() => users.id),
+    category_id: text("category_id")
+      .notNull()
+      .references(() => categories.id),
+    // 3-letter ISO code; only Spending on accounts in this currency counts.
+    currency: text("currency").notNull(),
+    // Integer minor units (grosze/cents) — never store money as floats.
+    limit_minor: integer("limit_minor").notNull(),
+    created_at: timestamp("created_at", { withTimezone: true, mode: "date" })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("budgets_user_category_currency_idx").on(
+      t.user_id,
+      t.category_id,
+      t.currency,
+    ),
+    check("budgets_limit_positive", sql`${t.limit_minor} > 0`),
   ],
 );
 

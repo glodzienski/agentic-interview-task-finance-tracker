@@ -102,6 +102,10 @@ export async function collectUserExport(userId: string) {
     .select()
     .from(schema.ai_usage)
     .where(eq(schema.ai_usage.user_id, userId));
+  const budgets = await db
+    .select()
+    .from(schema.budgets)
+    .where(eq(schema.budgets.user_id, userId));
   const [subscription] = await db
     .select({
       plan: schema.subscriptions.plan,
@@ -122,6 +126,7 @@ export async function collectUserExport(userId: string) {
     receipts,
     receiptItems,
     aiUsage,
+    budgets,
     subscription: subscription ?? null,
   };
 }
@@ -157,6 +162,7 @@ export async function buildExportZip(userId: string): Promise<Uint8Array> {
           ),
         })),
         aiUsage: data.aiUsage,
+        budgets: data.budgets,
         subscription: data.subscription,
       },
       null,
@@ -224,6 +230,19 @@ export async function buildExportZip(userId: string): Promise<Uint8Array> {
         data.categories.find((c) => c.id === r.category_id)?.name,
         r.priority,
         r.source,
+      ]),
+    ),
+  );
+  files["budgets.csv"] = strToU8(
+    toCsv(
+      ["id", "category", "currency", "limit", "limit_minor", "created_at"],
+      data.budgets.map((b) => [
+        b.id,
+        data.categories.find((c) => c.id === b.category_id)?.name,
+        b.currency,
+        formatMinor(b.limit_minor),
+        b.limit_minor,
+        b.created_at.toISOString(),
       ]),
     ),
   );
@@ -328,6 +347,7 @@ export async function hardDeleteUser(userId: string): Promise<void> {
     await tx
       .delete(schema.subscriptions)
       .where(eq(schema.subscriptions.user_id, userId));
+    await tx.delete(schema.budgets).where(eq(schema.budgets.user_id, userId));
     await tx.delete(schema.accounts).where(eq(schema.accounts.user_id, userId));
     await tx
       .delete(schema.categories)

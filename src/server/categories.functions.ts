@@ -305,6 +305,17 @@ export const deleteCategory = createServerFn({ method: "POST" })
       .delete(schema.categorization_rules)
       .where(inArray(schema.categorization_rules.category_id, allIdsToDelete));
 
+    // Budgets on deleted categories go with them — they never follow
+    // reassigned transactions (see CONTEXT.md, Budget).
+    await db
+      .delete(schema.budgets)
+      .where(
+        and(
+          inArray(schema.budgets.category_id, allIdsToDelete),
+          eq(schema.budgets.user_id, userId),
+        ),
+      );
+
     // Delete all descendant categories first, then the target
     await db
       .delete(schema.categories)

@@ -74,6 +74,13 @@ async function seedFullUser(userId: string) {
     total_price_minor: 599,
     category_id: `${userId}-cat`,
   });
+  await db.insert(schema.budgets).values({
+    id: `${userId}-budget`,
+    user_id: userId,
+    category_id: `${userId}-cat`,
+    currency: "PLN",
+    limit_minor: 100000,
+  });
   await db.insert(schema.ai_usage).values({
     id: `${userId}-usage`,
     user_id: userId,
@@ -125,6 +132,8 @@ describe("compliance: data export", () => {
     expect(json.receipts[0].image_file).toBe(`receipts/${userId}-rcpt.jpg`);
     expect(json.categorizationRules).toHaveLength(1);
     expect(json.subscription.plan).toBe("free");
+    expect(json.budgets).toHaveLength(1);
+    expect(json.budgets[0].limit_minor).toBe(100000);
 
     const txnCsv = strFromU8(files["transactions.csv"]);
     expect(txnCsv).toContain('"Grocery store"');
@@ -134,6 +143,9 @@ describe("compliance: data export", () => {
     expect(strFromU8(files["accounts.csv"])).toContain('"Checking"');
     expect(strFromU8(files["categories.csv"])).toContain('"Groceries"');
     expect(strFromU8(files["categorization_rules.csv"])).toContain('"grocery"');
+    const budgetsCsv = strFromU8(files["budgets.csv"]);
+    expect(budgetsCsv).toContain('"Groceries"');
+    expect(budgetsCsv).toContain('"1000.00"');
 
     expect(Array.from(files[`receipts/${userId}-rcpt.jpg`])).toEqual([
       0xff, 0xd8, 0xff, 0x42,
@@ -160,6 +172,7 @@ describe("compliance: account hard delete", () => {
       db.select().from(schema.receipt_items).where(eq(schema.receipt_items.receipt_id, `${userId}-rcpt`)),
       db.select().from(schema.ai_usage).where(eq(schema.ai_usage.user_id, userId)),
       db.select().from(schema.subscriptions).where(eq(schema.subscriptions.user_id, userId)),
+      db.select().from(schema.budgets).where(eq(schema.budgets.user_id, userId)),
     ]);
     for (const rows of remaining) {
       expect.soft(rows).toHaveLength(0);
