@@ -1,5 +1,5 @@
 import { and, asc, eq, gte, inArray, lt, sql, type SQLWrapper } from "drizzle-orm";
-import { db, schema } from "#/db";
+import { db, schema, type Db } from "#/db";
 import { formatMoney } from "#/lib/money";
 import { m } from "#/paraglide/messages";
 import { checkBudgetLimit, getEntitlements } from "#/server/billing.server";
@@ -558,9 +558,11 @@ export async function budgetCountsByCategory(
 export async function deleteBudgetsForCategories(
   userId: string,
   categoryIds: string[],
+  // Lets category deletion run this inside its own transaction.
+  executor: Pick<Db, "delete"> = db,
 ): Promise<void> {
   if (categoryIds.length === 0) return;
-  await db
+  await executor
     .delete(schema.budgets)
     .where(
       and(
