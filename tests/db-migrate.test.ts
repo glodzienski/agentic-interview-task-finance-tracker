@@ -12,7 +12,12 @@ function freshDb() {
   return drizzle(client);
 }
 
-describe("startup migrations", () => {
+// Each test boots a fresh PGlite (WASM) instance and replays every migration,
+// which takes ~6s when the whole unit suite runs in parallel — well past
+// vitest's 5s default.
+const FRESH_DB_TIMEOUT_MS = 30_000;
+
+describe("startup migrations", { timeout: FRESH_DB_TIMEOUT_MS }, () => {
   it("applies all migrations to an empty database and is idempotent", async () => {
     const db = freshDb();
     await runMigrations(db, "pglite", migrationsFolder);

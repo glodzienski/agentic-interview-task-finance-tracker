@@ -14,7 +14,12 @@ async function migratedDb() {
   return db;
 }
 
-describe("readiness check", () => {
+// Each test boots a fresh PGlite (WASM) instance and replays every migration,
+// which takes ~6s when the whole unit suite runs in parallel — well past
+// vitest's 5s default.
+const FRESH_DB_TIMEOUT_MS = 30_000;
+
+describe("readiness check", { timeout: FRESH_DB_TIMEOUT_MS }, () => {
   it("reports ready against a reachable, migrated database", async () => {
     const db = await migratedDb();
     const result = await checkReadiness(db, migrationsFolder);
