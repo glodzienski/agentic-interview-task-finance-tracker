@@ -114,7 +114,11 @@ async function spendingByCategoryAndCurrency(
   );
 
   const spending = new Map<string, number>();
-  const add = (categoryId: string | null, currency: string | null, minor: number) => {
+  const attribute = (
+    categoryId: string | null,
+    currency: string | null,
+    minor: number,
+  ) => {
     // Uncategorised Spending counts toward no Budget.
     if (!categoryId || minor <= 0) return;
     const key = `${categoryId}|${currency}`;
@@ -124,30 +128,35 @@ async function spendingByCategoryAndCurrency(
   for (const txn of transactions) {
     const spent = -txn.amountMinor;
     const items = itemsByTransaction.get(txn.id) ?? [];
-    let toTransactionCategory = spent;
+    let itemsTotal = 0;
+    let uncategorisedItems = 0;
     for (const item of items) {
+      itemsTotal += item.totalPriceMinor;
       if (item.categoryId) {
-        add(item.categoryId, txn.currency, item.totalPriceMinor);
-        toTransactionCategory -= item.totalPriceMinor;
+        attribute(item.categoryId, txn.currency, item.totalPriceMinor);
+      } else {
+        uncategorisedItems += item.totalPriceMinor;
       }
     }
-    // Uncategorised items stay in toTransactionCategory, as does the
-    // uncovered remainder; a negative remainder (items exceed the
-    // transaction) adds nothing.
-    add(txn.categoryId, txn.currency, toTransactionCategory);
+    // The transaction's category gets its uncategorised items plus whatever
+    // the items don't cover — never less because other items ran over.
+    const uncovered = Math.max(0, spent - itemsTotal);
+    attribute(txn.categoryId, txn.currency, uncategorisedItems + uncovered);
   }
   return spending;
 }
 
-/** Receipt items of the given transactions, grouped by transaction id. */
+interface AttributableItem {
+  categoryId: string | null;
+  totalPriceMinor: number;
+}
+
+/** Receipt items of the given transactions (all their receipts), by transaction id. */
 async function receiptItemsByTransaction(
   userId: string,
   transactionIds: SQLWrapper,
-): Promise<Map<string, { categoryId: string | null; totalPriceMinor: number }[]>> {
-  const grouped = new Map<
-    string,
-    { categoryId: string | null; totalPriceMinor: number }[]
-  >();
+): Promise<Map<string, AttributableItem[]>> {
+  const grouped = new Map<string, AttributableItem[]>();
   const rows = await db
     .select({
       transactionId: schema.receipts.transaction_id,
@@ -167,7 +176,9 @@ async function receiptItemsByTransaction(
     );
   for (const row of rows) {
     if (!row.transactionId) continue;
-    grouped.set(row.transactionId, [...(grouped.get(row.transactionId) ?? []), row]);
+    const items = grouped.get(row.transactionId);
+    if (items) items.push(row);
+    else grouped.set(row.transactionId, [row]);
   }
   return grouped;
 }
